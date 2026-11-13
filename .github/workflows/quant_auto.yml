@@ -1,0 +1,26 @@
+name: AI Quant Daily Pipeline
+
+on:
+  schedule:
+    - cron: '0 22 * * 1-5'  # 평일 UTC 22:00 (한국 시간 오전 7:00) 자동 실행
+  workflow_dispatch:
+
+jobs:
+  run-quant-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas numpy lightgbm catboost scikit-learn
+
+      - name: Run Quant Engine Script
+        run: |
+          python main.py
