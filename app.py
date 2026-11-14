@@ -505,19 +505,19 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석 (TypeError 수정 완료)
+  # 3. 특정 종목 과거 시점 분석 (요청하신 사후 검증 리포트 포맷 적용)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
     target_ticker = st.text_input(
-        "분석할 티커 입력 (예: TSLA)", "TSLA", key="past_ticker"
+        "분석할 티커 입력 (예: TSM, TSLA)", "TSM", key="past_ticker"
     ).upper()
     target_date = st.date_input(
         "조회할 과거 날짜 선택", datetime.now() - timedelta(days=30)
     )
 
-    if st.button("과거 시점 시그널 조회"):
-      with st.spinner(f"{target_ticker} 과거 데이터 조회 중..."):
+    if st.button("과거 시점 시그널 검증 실행"):
+      with st.spinner(f"{target_ticker} 과거 데이터 조회 및 사후 검증 중..."):
         try:
           t_obj = yf.Ticker(target_ticker, session=session)
           try:
@@ -540,59 +540,12 @@ else:
             df_t.columns = df_t.columns.get_level_values(0)
 
           df_t = compute_features(df_t)
-          # 💡 .date 속성 뒤의 불필요한 괄호 제거 (TypeError 방지)
           df_t.index = pd.to_datetime(df_t.index).date
 
           if target_date in df_t.index:
             row = df_t.loc[[target_date]]
             x_val = row[FEATURE_COLS]
 
+            score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-            pred_tp = float(tp_regressor.predict(x_val)[0])
-            close_p = float(row["Close"].values[0])
-
-            atr_p = float(row["ATR_Pct"].values[0])
-            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
-            sl_price = close_p * (1 + sl_pct / 100)
-            tp_price = close_p * (1 + tp_pct / 100)
-
-            st.subheader(
-                f"📊 {long_name} ({target_ticker}) - {target_date} 기준 리포트"
-            )
-
-            st.markdown(METRIC_CSS, unsafe_allow_html=True)
-
-            past_metric_html = (
-                '<div class="metric-container">'
-                '<div class="metric-card">'
-                '<div class="metric-title">해당일 종가 (진입가)</div>'
-                f'<div class="metric-value">${close_p:.2f}</div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">산출 손절가</div>'
-                f'<div class="metric-value">${sl_price:.2f} <span'
-                f' style="font-size:14px; color:#FF6B6B;">({sl_pct:.1f}%)</span></div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">산출 익절가</div>'
-                f'<div class="metric-value">${tp_price:.2f} <span'
-                f' style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.1f}%)</span></div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">모델 생존 확률</div>'
-                f'<div class="metric-value">{surv_prob:.1f}%</div>'
-                "</div>"
-                "</div>"
-            )
-            st.markdown(past_metric_html, unsafe_allow_html=True)
-
-            sub_future = df_t.loc[target_date:].head(8)
-            st.line_chart(sub_future["Close"])
-          else:
-            st.warning(
-                "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
-            )
-        except Exception as e:
-          st.error(f"과거 데이터 조회 중 오류 발생: {e}")
-          st.code(traceback.format_exc(), language="python")
+            pred_tp = float(tp_regressor.predict(x_val)
