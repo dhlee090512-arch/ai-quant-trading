@@ -3,19 +3,29 @@ from datetime import datetime, timedelta
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title="7일 스윙 퀀트 대시보드", page_icon="📈", layout="wide"
+    page_title="AI 퀀트 트레이딩 대시보드", page_icon="📈", layout="wide"
 )
 
-st.title("🚀 AI 기반 7일 스윙 퀀트 트레이딩 시스템")
+st.title("🚀 AI 기반 퀀트 트레이딩 시스템")
 st.write(
     "LightGBM 3중 앙상블 모델(Ranking + Survival + TP Regressor) 기반 실전"
     " 분석 대시보드"
 )
+
+# 야후 파이낸스 차단 우회를 위한 세션 설정
+session = requests.Session()
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+})
 
 
 # 1. 깃허브에 저장된 모델 및 피처 목록 로드 (캐싱 적용)
@@ -41,7 +51,7 @@ ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS = (
     load_models_and_features()
 )
 
-if RANKER_LOADED := (ranker_lgb is not None):
+if ranker_lgb is not None:
   # 사이드바 메뉴 구성
   menu = st.sidebar.selectbox(
       "메뉴 선택",
@@ -52,28 +62,88 @@ if RANKER_LOADED := (ranker_lgb is not None):
       ],
   )
 
-  # 분석 유니버스 정의
+  # 💡 분석 유니버스 티커 리스트 (가로로 정렬하여 줄 수 축소)
   UNIVERSE_TICKERS = [
       "AAPL",
       "MSFT",
       "GOOGL",
       "AMZN",
       "NVDA",
-      "TSLA",
       "META",
+      "TSLA",
+      "BRK-B",
+      "LLY",
+      "AVGO",
+      "JPM",
+      "XOM",
+      "UNH",
+      "V",
+      "PG",
+      "JNJ",
+      "MA",
+      "HD",
+      "COST",
+      "MRK",
+      "ABBV",
       "NFLX",
       "AMD",
+      "BAC",
+      "CRM",
+      "CVX",
+      "WMT",
+      "COIN",
+      "PLTR",
+      "TSM",
       "INTC",
       "QCOM",
-      "AVGO",
-      "TXN",
+      "IBM",
       "AMAT",
-      "MU",
       "LRCX",
+      "MU",
+      "ARM",
+      "MRVL",
+      "SMCI",
+      "SOXL",
+      "TQQQ",
+      "SQQQ",
+      "BA",
+      "DIS",
+      "NKE",
+      "SBUX",
+      "PYPL",
+      "SHOP",
+      "UBER",
+      "ABNB",
+      "SNOW",
+      "NET",
+      "CRWD",
+      "DDOG",
+      "ZS",
+      "PANW",
+      "NOW",
+      "MDB",
+      "TEAM",
+      "ADBE",
+      "INTU",
+      "ORCL",
+      "CSCO",
+      "ACN",
+      "TXN",
+      "NEE",
+      "UNP",
+      "HON",
+      "UPS",
+      "CAT",
+      "GE",
+      "RTX",
+      "LOW",
+      "SPGI",
+      "BLK",
+      "MARA",
   ]
 
 
-  # 코랩과 동일한 피처 엔지니어링 함수
+  # 피처 엔지니어링 함수
   def compute_features(df):
     df["Return_1d"] = df["Close"].pct_change(1)
     df["Return_5d"] = df["Close"].pct_change(5)
@@ -153,60 +223,80 @@ if RANKER_LOADED := (ranker_lgb is not None):
   # 1. 당일 종목 추천 (스캐너)
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
-    st.header("🔥 당일 기준 정예 챔피언 스캐너 (7일 스윙)")
+    st.header("🔥 당일 기준 정예 챔피언 스캐너")
     st.write(
-        "유니버스 전체 종목의 최신 데이터를 수집하여 7일 스윙 시그널을 도출합니다."
+        f"총 {len(UNIVERSE_TICKERS)}개 종목의 유니버스를 대상으로 최신 데이터를"
+        " 수집하여 트레이딩 시그널을 도출합니다."
     )
 
     if st.button("실시간 스캔 실행"):
-      with st.spinner("데이터 수집 및 모델 추론 중..."):
-        results = []
-        for ticker in UNIVERSE_TICKERS:
-          try:
-            df_t = yf.download(
-                ticker, period="6mo", progress=False, auto_adjust=True
-            )
-            if isinstance(df_t.columns, pd.MultiIndex):
-              df_t.columns = df_t.columns.get_level_values(0)
-            df_t = compute_features(df_t)
-            latest = df_t.iloc[[-1]].copy()
+      progress_bar = st.progress(0)
+      status_text = st.empty()
 
-            if latest[FEATURE_COLS].isna().sum().sum() == 0:
-              x_val = latest[FEATURE_COLS]
-              score = ranker_lgb.predict(x_val)[0]
-              surv_prob = classifier_lgb.predict(x_val)[0] * 100
-              pred_tp = tp_regressor.predict(x_val)[0]
+      results = []
+      total_tickers = len(UNIVERSE_TICKERS)
 
-              results.append({
-                  "Ticker": ticker,
-                  "Close": latest["Close"].values[0],
-                  "ATR_Pct": latest["ATR_Pct"].values[0] * 100,
-                  "Pred_Score": score,
-                  "Survive_Prob": surv_prob,
-                  "Predicted_TP": pred_tp,
-              })
-          except Exception as e:
+      for idx, ticker in enumerate(UNIVERSE_TICKERS):
+        status_text.text(
+            f"({idx+1}/{total_tickers}) {ticker} 데이터 수집 및 분석 중..."
+        )
+        progress_bar.progress((idx + 1) / total_tickers)
+
+        try:
+          df_t = yf.download(
+              ticker,
+              period="6mo",
+              progress=False,
+              auto_adjust=True,
+              session=session,
+          )
+          if isinstance(df_t.columns, pd.MultiIndex):
+            df_t.columns = df_t.columns.get_level_values(0)
+
+          if len(df_t) < 30:
             continue
 
-        if results:
-          res_df = pd.DataFrame(results)
-          # 생존 확률 62% 이상 필터링
-          filtered = res_df[res_df["Survive_Prob"] >= 62.0].sort_values(
-              by="Pred_Score", ascending=False
-          )
+          df_t = compute_features(df_t)
+          latest = df_t.iloc[[-1]].copy()
 
-          if len(filtered) > 0:
-            st.success(
-                f"총 {len(filtered)}개의 정예 챔피언 종목이 포착되었습니다!"
-            )
-            st.dataframe(filtered.reset_index(drop=True))
-          else:
-            st.warning(
-                "오늘 기준 조건(생존확률 62% 이상)을 충족하는 종목이 없습니다."
-                " (관망 추천)"
-            )
+          if latest[FEATURE_COLS].isna().sum().sum() == 0:
+            x_val = latest[FEATURE_COLS]
+            score = ranker_lgb.predict(x_val)[0]
+            surv_prob = classifier_lgb.predict(x_val)[0] * 100
+            pred_tp = tp_regressor.predict(x_val)[0]
+
+            results.append({
+                "Ticker": ticker,
+                "Close": latest["Close"].values[0],
+                "ATR_Pct": latest["ATR_Pct"].values[0] * 100,
+                "Pred_Score": score,
+                "Survive_Prob": surv_prob,
+                "Predicted_TP": pred_tp,
+            })
+        except Exception as e:
+          continue
+
+      progress_bar.empty()
+      status_text.empty()
+
+      if results:
+        res_df = pd.DataFrame(results)
+        filtered = res_df[res_df["Survive_Prob"] >= 62.0].sort_values(
+            by="Pred_Score", ascending=False
+        )
+
+        if len(filtered) > 0:
+          st.success(
+              f"총 {len(filtered)}개의 정예 챔피언 종목이 포착되었습니다!"
+          )
+          st.dataframe(filtered.reset_index(drop=True))
         else:
-          st.error("데이터를 불러오지 못했습니다.")
+          st.warning(
+              "오늘 기준 조건(생존확률 62% 이상)을 충족하는 종목이 없습니다."
+              " (관망 추천)"
+          )
+      else:
+        st.error("데이터를 불러오지 못했습니다.")
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
@@ -221,10 +311,15 @@ if RANKER_LOADED := (ranker_lgb is not None):
       with st.spinner(f"{target_ticker} 분석 중..."):
         try:
           df_t = yf.download(
-              target_ticker, period="6mo", progress=False, auto_adjust=True
+              target_ticker,
+              period="6mo",
+              progress=False,
+              auto_adjust=True,
+              session=session,
           )
           if isinstance(df_t.columns, pd.MultiIndex):
             df_t.columns = df_t.columns.get_level_values(0)
+
           df_t = compute_features(df_t)
           latest = df_t.iloc[[-1]].copy()
 
@@ -263,7 +358,11 @@ if RANKER_LOADED := (ranker_lgb is not None):
     if st.button("과거 시점 시그널 조회"):
       try:
         df_t = yf.download(
-            target_ticker, period="2y", progress=False, auto_adjust=True
+            target_ticker,
+            period="2y",
+            progress=False,
+            auto_adjust=True,
+            session=session,
         )
         if isinstance(df_t.columns, pd.MultiIndex):
           df_t.columns = df_t.columns.get_level_values(0)
