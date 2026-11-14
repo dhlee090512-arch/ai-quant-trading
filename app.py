@@ -41,30 +41,33 @@ def load_models_and_features():
     with open("models/feature_cols.json", "r") as f:
       feature_cols = json.load(f)
 
-    return ranker, classifier, tp_reg, feature_cols
+    return ranker, classifier, tp_reg, feature_cols, None
   except Exception as e:
-    st.error(
-        f"모델 파일을 불러오는 중 오류가 발생했습니다. (models/ 폴더 확인"
-        f" 필요): {e}"
-    )
-    return None, None, None, None
+    return None, None, None, None, str(e)
 
 
-ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS = (
+ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS, load_error = (
     load_models_and_features()
 )
 
-if ranker_lgb is not None:
-  # 사이드바 메뉴 구성
-  menu = st.sidebar.selectbox(
-      "메뉴 선택",
-      [
-          "🔥 당일 종목 추천 (스캐너)",
-          "🔍 특정 종목 당일 분석",
-          "⏳ 특정 종목 과거 시점 분석",
-      ],
-  )
+# 사이드바 메뉴 구성 (모델 로드 여부와 상관없이 항상 노출)
+menu = st.sidebar.selectbox(
+    "메뉴 선택",
+    [
+        "🔥 당일 종목 추천 (스캐너)",
+        "🔍 특정 종목 당일 분석",
+        "⏳ 특정 종목 과거 시점 분석",
+    ],
+)
 
+# 모델 로드 실패 시 에러 안내 문구 출력
+if load_error is not None:
+  st.error(
+      "🚨 모델 파일 로딩 실패! GitHub 레포지토리의 `models/` 폴더 안에 모델"
+      f" 파일들이 정상적으로 업로드되었는지 확인해주세요.\n\n**에러 내용:**"
+      f" {load_error}"
+  )
+else:
   # 분석 유니버스 티커 리스트
   UNIVERSE_TICKERS = [
       "AAPL",
@@ -361,18 +364,4 @@ if ranker_lgb is not None:
       display_df = df_display.copy()
       display_df.index = display_df.index + 1
       display_df.index.name = "순위"
-      display_df = display_df.reset_index()
-
-      if not str(display_df["조정 손절폭(%)"].iloc[0]).endswith("%"):
-        display_df["조정 손절폭(%)"] = (
-            display_df["조정 손절폭(%)"].astype(str) + " %"
-        )
-        display_df["동적 익절폭(%)"] = (
-            "+" + display_df["동적 익절폭(%)"].astype(str) + " %"
-        )
-        display_df["생존확률"] = display_df["생존확률"].astype(str) + " %"
-
-      st.dataframe(display_df, use_container_width=True)
-
-  # -------------------------------------------------------------
-  # 2. 특정 종목
+      display_df = display_df.reset
