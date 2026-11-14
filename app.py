@@ -505,7 +505,7 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석 (요청하신 사후 검증 리포트 포맷 적용)
+  # 3. 특정 종목 과거 시점 분석 (사후 검증 리포트 포맷 적용)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
@@ -548,4 +548,79 @@ else:
 
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-            pred_tp = float(tp_regressor.predict(x_val)
+            pred_tp = float(tp_regressor.predict(x_val)[0])
+            close_p = float(row["Close"].values[0])
+
+            atr_p = float(row["ATR_Pct"].values[0])
+            atr_limit_passed = atr_p * 100 <= 4.5
+
+            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+            sl_price = close_p * (1 + sl_pct / 100)
+            tp_price = close_p * (1 + tp_pct / 100)
+
+            surv_passed = surv_prob >= 58.0
+            is_champion = surv_passed and atr_limit_passed
+
+            # 💡 향후 5거래일 사후 검증 데이터 추출
+            future_sub = df_t.loc[target_date:].head(6)
+            if len(future_sub) > 1:
+              valid_5d = future_sub.iloc[1:]  # 향후 5거래일
+              high_5d = float(valid_5d["High"].max())
+              low_5d = float(valid_5d["Low"].min())
+              close_5d = float(valid_5d["Close"].iloc[-1])
+              ret_5d = (close_5d - close_p) / close_p * 100
+
+              tp_reached = high_5d >= tp_price
+              sl_touched = low_5d <= sl_price
+
+              tp_str = f"성공 🎯 ({high_5d:.2f} 도달)" if tp_reached else "미달 ❌"
+              sl_str = (
+                  f"위험 ⚠️ (터치 발생)"
+                  if sl_touched
+                  else "안전 ✅ (터치 없음)"
+              )
+            else:
+              high_5d, low_5d, close_5d, ret_5d = (
+                  close_p,
+                  close_p,
+                  close_p,
+                  0.0,
+              )
+              tp_str, sl_str = "데이터 부족", "데이터 부족"
+
+            # 💡 리포트 출력 렌더링
+            st.markdown(
+                f"```text\n=================================================================\n"
+                f"🔍 [{target_ticker}] 특정 시점 전망 및 시그널 분석 리포트"
+                f" ({long_name})\n=================================================================\n"
+                f"- 기준 날짜: {target_date}\n"
+                f"- 진입가 (종가): ${close_p:.2f}\n"
+                f"- 일일 ATR 비율: {atr_p*100:.2f}% (한도 4.5% 이하: {'통과 ✅' if atr_limit_passed else '초과 ❌'})\n"
+                f"- 모델 랭킹 점수: {score:.4f}\n"
+                f"- 손절 생존 확률: {surv_prob:.1f}% (기준 58% 이상: {'통과 ✅' if surv_passed else '미달 ❌'})\n"
+                f"- 산출 손절가: ${sl_price:.2f} ({sl_pct:.2f}%)\n"
+                f"- 산출 동적 익절가: ${tp_price:.2f} (+{tp_pct:.2f}%)\n"
+                f"-----------------------------------------------------------------\n"
+                f"💡 [종합 판정] {'✨ [' + target_ticker + '] 매수 진입 적격 챔피언 시그널!' if is_champion else '⚠️ 조건 미달 (관망 권장)'}\n"
+                f"=================================================================\n"
+                f"📊 [사후 검증] {target_date} 진입 후 실제 주가 경로\n"
+                f"-----------------------------------------------------------------\n"
+                f"- 5일간 최고가 기록: ${high_5d:.2f} (익절 도달: {tp_str})\n"
+                f"- 5일간 최저가 기록: ${low_5d:.2f} (손절 터치: {sl_str})\n"
+                f"- 5일 만기 종가 수익률: {ret_5d:+.2f}%\n"
+                f"================================================================="
+                f"\n```"
+            )
+
+            # 시각화 차트 추가
+            st.subheader("📈 향후 5일간 주가 경로 차트")
+            st.line_chart(future_sub["Close"])
+
+          else:
+            st.warning(
+                "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
+            )
+        except Exception as e:
+          st.error(f"과거 데이터 조회 중 오류 발생: {e}")
+          st.code(traceback.format_exc(), language="python")
