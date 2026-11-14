@@ -144,13 +144,12 @@ if ranker_lgb is not None:
   ]
 
 
-  # 피처 엔지니어링 함수 (모델이 요구하는 피처 이름과 완벽히 일치시키도록 수정)
+  # 피처 엔지니어링 함수
   def compute_features(df):
     df["Return_1d"] = df["Close"].pct_change(1)
     df["Return_5d"] = df["Close"].pct_change(5)
     df["Return_60d"] = df["Close"].pct_change(60)
 
-    # 💡 모델이 요구하는 필수 피처들 매핑 추가
     df["Ret_5d"] = df["Close"].pct_change(5)
     df["Ret_20d"] = df["Close"].pct_change(20)
     df["Ret_60d"] = df["Close"].pct_change(60)
@@ -228,13 +227,13 @@ if ranker_lgb is not None:
 
 
   # -------------------------------------------------------------
-  # 1. 당일 종목 추천 (스캐너)
+  # 1. 당일 종목 추천 (스캐너) - 실전 가이드라인 포맷 적용
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header("🔥 당일 기준 정예 챔피언 스캐너")
     st.write(
         f"총 {len(UNIVERSE_TICKERS)}개 종목의 유니버스를 대상으로 최신 데이터를"
-        " 수집하여 트레이딩 시그널을 도출합니다."
+        " 수집하여 실전 트레이딩 가이드라인 시그널을 도출합니다."
     )
 
     if st.button("실시간 스캔 실행"):
@@ -274,13 +273,25 @@ if ranker_lgb is not None:
             surv_prob = classifier_lgb.predict(x_val)[0] * 100
             pred_tp = tp_regressor.predict(x_val)[0]
 
+            close_p = latest["Close"].values[0]
+            atr_p = latest["ATR_Pct"].values[0]
+
+            # 💡 실전 가이드라인 계산 로직 (손절폭 및 익절폭 산출)
+            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+
+            sl_price = close_p * (1 + sl_pct / 100)
+            tp_price = close_p * (1 + tp_pct / 100)
+
             results.append({
                 "Ticker": ticker,
-                "Close": latest["Close"].values[0],
-                "ATR_Pct": latest["ATR_Pct"].values[0] * 100,
+                "진입가($)": round(close_p, 2),
+                "손절가($)": round(sl_price, 2),
+                "조정 손절폭(%)": round(sl_pct, 2),
+                "동적익절가($)": round(tp_price, 2),
+                "동적 익절폭(%)": round(tp_pct, 2),
+                "생존확률": round(surv_prob, 1),
                 "Pred_Score": score,
-                "Survive_Prob": surv_prob,
-                "Predicted_TP": pred_tp,
             })
         except Exception as e:
           error_logs.append(f"[{ticker}] 에러 내용: {str(e)}")
@@ -291,7 +302,8 @@ if ranker_lgb is not None:
 
       if results:
         res_df = pd.DataFrame(results)
-        filtered = res_df[res_df["Survive_Prob"] >= 62.0].sort_values(
+        # 생존확률 62% 이상 필터링 후 랭킹 스코어 기준 정렬
+        filtered = res_df[res_df["생존확률"] >= 62.0].sort_values(
             by="Pred_Score", ascending=False
         )
 
@@ -299,7 +311,25 @@ if ranker_lgb is not None:
           st.success(
               f"총 {len(filtered)}개의 정예 챔피언 종목이 포착되었습니다!"
           )
-          st.dataframe(filtered.reset_index(drop=True))
+
+          # 💡 표 출력 포맷 정돈 (순위 부여 및 내부 스코어 컬럼 제외)
+          display_df = filtered.drop(columns=["Pred_Score"]).reset_index(
+              drop=True
+          )
+          display_df.index = display_df.index + 1
+          display_df.index.name = "순위"
+          display_df = display_df.reset_index()
+
+          # 퍼센트 기호 결합
+          display_df["조정 손절폭(%)"] = (
+              display_df["조정 손절폭(%)"].astype(str) + " %"
+          )
+          display_df["동적 익절폭(%)"] = (
+              "+" + display_df["동적 익절폭(%)"].astype(str) + " %"
+          )
+          display_df["생존확률"] = display_df["생존확률"].astype(str) + " %"
+
+          st.dataframe(display_df, use_container_width=True)
         else:
           st.warning(
               "오늘 기준 조건(생존확률 62% 이상)을 충족하는 종목이 없습니다."
@@ -311,7 +341,6 @@ if ranker_lgb is not None:
         )
         if error_logs:
           st.error(f"🚨 상세 에러 로그 총 {len(error_logs)}건 발생:")
-          # 💡 상위 10개 제한을 풀고 전체 에러 로그를 출력하도록 수정
           st.code("\n".join(error_logs), language="text")
 
   # -------------------------------------------------------------
@@ -340,7 +369,6 @@ if ranker_lgb is not None:
           latest = df_t.iloc[[-1]].copy()
 
           x_val = latest[FEATURE_COLS]
-          score = ranker_lgb.predict(x_val)[0]
           surv_prob = classifier_lgb.predict(x_val)[0] * 100
           pred_tp = tp_regressor.predict(x_val)[0]
           close_p = latest["Close"].values[0]
@@ -349,11 +377,15 @@ if ranker_lgb is not None:
           sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
           tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
 
-          st.metric(label="현재 종가", value=f"${close_p:.2f}")
-          col1, col2, col3 = st.columns(3)
+          sl_price = close_p * (1 + sl_pct / 100)
+          tp_price = close_p * (1 + tp_pct / 100)
+
+          st.metric(label="현재 종가 (진입가)", value=f"${close_p:.2f}")
+          col1, col2, col3, col4 = st.columns(4)
           col1.metric("모델 생존 확률", f"{surv_prob:.1f}%")
-          col2.metric("권장 손절폭", f"{sl_pct:.2f}%")
-          col3.metric("예상 목표익절폭", f"+{tp_pct:.2f}%")
+          col2.metric("권장 손절가", f"${sl_price:.2f} ({sl_pct:.2f}%)")
+          col3.metric("예상 동적익절가", f"${tp_price:.2f} (+{tp_pct:.2f}%)")
+          col4.metric("예상 목표익절폭", f"+{pred_tp:.2f}%")
 
           st.line_chart(df_t["Close"].tail(30))
         except Exception as e:
@@ -393,10 +425,22 @@ if ranker_lgb is not None:
           pred_tp = tp_regressor.predict(x_val)[0]
           close_p = row["Close"].values[0]
 
+          atr_p = row["ATR_Pct"].values[0]
+          sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+          tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+          sl_price = close_p * (1 + sl_pct / 100)
+          tp_price = close_p * (1 + tp_pct / 100)
+
           st.success(f"{target_date} 기준 {target_ticker} 분석 결과")
-          st.write(f"- 당일 종가: ${close_p:.2f}")
+          col1, col2, col3 = st.columns(3)
+          col1.metric("해당일 종가 (진입가)", f"${close_p:.2f}")
+          col2.metric(
+              "산출 손절가", f"${sl_price:.2f} ({sl_pct:.1f}%)"
+          )
+          col3.metric(
+              "산출 익절가", f"${tp_price:.2f} (+{tp_pct:.1f}%)"
+          )
           st.write(f"- 모델 생존 확률: {surv_prob:.1f}%")
-          st.write(f"- 예측 익절폭: +{pred_tp:.2f}%")
 
           sub_future = df_t.loc[target_date:].head(8)
           st.line_chart(sub_future["Close"])
