@@ -505,7 +505,7 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석
+  # 3. 특정 종목 과거 시점 분석 (TypeError 수정 완료)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
@@ -540,7 +540,8 @@ else:
             df_t.columns = df_t.columns.get_level_values(0)
 
           df_t = compute_features(df_t)
-          df_t.index = pd.to_datetime(df_t.index).date()
+          # 💡 .date 속성 뒤의 불필요한 괄호 제거 (TypeError 방지)
+          df_t.index = pd.to_datetime(df_t.index).date
 
           if target_date in df_t.index:
             row = df_t.loc[[target_date]]
