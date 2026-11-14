@@ -144,11 +144,18 @@ if ranker_lgb is not None:
   ]
 
 
-  # 피처 엔지니어링 함수
+  # 피처 엔지니어링 함수 (모델이 요구하는 피처 이름과 완벽히 일치시키도록 수정)
   def compute_features(df):
     df["Return_1d"] = df["Close"].pct_change(1)
     df["Return_5d"] = df["Close"].pct_change(5)
     df["Return_60d"] = df["Close"].pct_change(60)
+
+    # 💡 모델이 요구하는 필수 피처들 매핑 추가
+    df["Ret_5d"] = df["Close"].pct_change(5)
+    df["Ret_20d"] = df["Close"].pct_change(20)
+    df["Ret_60d"] = df["Close"].pct_change(60)
+    df["Rel_Strength_5d"] = df["Ret_5d"] - df["Ret_5d"].rolling(20).mean()
+
     df["MA_5"] = df["Close"] / df["Close"].rolling(5).mean() - 1
     df["MA_20"] = df["Close"] / df["Close"].rolling(20).mean() - 1
     df["MA_60"] = df["Close"] / df["Close"].rolling(60).mean() - 1
@@ -235,7 +242,7 @@ if ranker_lgb is not None:
       status_text = st.empty()
 
       results = []
-      error_logs = []  # 에러 로그 저장용
+      error_logs = []
       total_tickers = len(UNIVERSE_TICKERS)
 
       for idx, ticker in enumerate(UNIVERSE_TICKERS):
@@ -303,10 +310,9 @@ if ranker_lgb is not None:
             "데이터를 불러오지 못했습니다. 아래 디버깅 로그를 확인해주세요."
         )
         if error_logs:
-          st.error(
-              f"🚨 상세 에러 로그 총 {len(error_logs)}건 발생 (상위 10개 표시):"
-          )
-          st.code("\n".join(error_logs[:10]), language="text")
+          st.error(f"🚨 상세 에러 로그 총 {len(error_logs)}건 발생:")
+          # 💡 상위 10개 제한을 풀고 전체 에러 로그를 출력하도록 수정
+          st.code("\n".join(error_logs), language="text")
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
