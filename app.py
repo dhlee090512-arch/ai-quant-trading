@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
+import datetime as dt
 import json
+import os
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -227,121 +229,143 @@ if ranker_lgb is not None:
 
 
   # -------------------------------------------------------------
-  # 1. 당일 종목 추천 (스캐너) - 실전 가이드라인 포맷 적용
+  # 1. 당일 종목 추천 (스캐너) - 캐시 파일 기반 즉시 로딩 및 기준 시점 표시
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header("🔥 당일 기준 정예 챔피언 스캐너")
     st.write(
-        f"총 {len(UNIVERSE_TICKERS)}개 종목의 유니버스를 대상으로 최신 데이터를"
-        " 수집하여 실전 트레이딩 가이드라인 시그널을 도출합니다."
+        "저장된 최신 스캔 데이터를 즉시 불러옵니다. 강제로 새로 스캔하려면 아래"
+        " 버튼을 누르세요."
     )
 
-    if st.button("실시간 스캔 실행"):
-      progress_bar = st.progress(0)
-      status_text = st.empty()
+    cache_file = "models/latest_scan_results.csv"
+    run_scan = st.button("🔄 실시간 전체 유니버스 재스캔 실행")
 
-      results = []
-      error_logs = []
-      total_tickers = len(UNIVERSE_TICKERS)
+    df_display = None
+    scan_timestamp = None
 
-      for idx, ticker in enumerate(UNIVERSE_TICKERS):
-        status_text.text(
-            f"({idx+1}/{total_tickers}) {ticker} 데이터 수집 및 분석 중..."
+    if not run_scan and os.path.exists(cache_file):
+      try:
+        df_display = pd.read_csv(cache_file)
+        # 파일 수정 시간(mtime)을 데이터 기준 시점으로 활용
+        mtime = os.path.getmtime(cache_file)
+        scan_timestamp = dt.datetime.fromtimestamp(mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
         )
-        progress_bar.progress((idx + 1) / total_tickers)
+        st.info("📂 캐시된 최신 스캔 데이터를 즉시 불러왔습니다.")
+      except Exception:
+        run_scan = True
 
-        try:
-          df_t = yf.download(
-              ticker,
-              period="6mo",
-              progress=False,
-              auto_adjust=True,
-              session=session,
+    if run_scan or df_display is None:
+      with st.spinner(
+          f"총 {len(UNIVERSE_TICKERS)}개 종목 실시간 스캔 및 추론 중..."
+      ):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        results = []
+        error_logs = []
+        total_tickers = len(UNIVERSE_TICKERS)
+
+        for idx, ticker in enumerate(UNIVERSE_TICKERS):
+          status_text.text(
+              f"({idx+1}/{total_tickers}) {ticker} 데이터 수집 및 분석 중..."
           )
-          if isinstance(df_t.columns, pd.MultiIndex):
-            df_t.columns = df_t.columns.get_level_values(0)
+          progress_bar.progress((idx + 1) / total_tickers)
 
-          if len(df_t) < 30:
+          try:
+            df_t = yf.download(
+                ticker,
+                period="6mo",
+                progress=False,
+                auto_adjust=True,
+                session=session,
+            )
+            if isinstance(df_t.columns, pd.MultiIndex):
+              df_t.columns = df_t.columns.get_level_values(0)
+
+            if len(df_t) < 30:
+              continue
+
+            df_t = compute_features(df_t)
+            latest = df_t.iloc[[-1]].copy()
+
+            if latest[FEATURE_COLS].isna().sum().sum() == 0:
+              x_val = latest[FEATURE_COLS]
+              score = ranker_lgb.predict(x_val)[0]
+              surv_prob = classifier_lgb.predict(x_val)[0] * 100
+              pred_tp = tp_regressor.predict(x_val)[0]
+
+              close_p = latest["Close"].values[0]
+              atr_p = latest["ATR_Pct"].values[0]
+
+              sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+              tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+
+              sl_price = close_p * (1 + sl_pct / 100)
+              tp_price = close_p * (1 + tp_pct / 100)
+
+              results.append({
+                  "Ticker": ticker,
+                  "진입가($)": round(close_p, 2),
+                  "손절가($)": round(sl_price, 2),
+                  "조정 손절폭(%)": round(sl_pct, 2),
+                  "동적익절가($)": round(tp_price, 2),
+                  "동적 익절폭(%)": round(tp_pct, 2),
+                  "생존확률": round(surv_prob, 1),
+                  "Pred_Score": score,
+              })
+          except Exception as e:
+            error_logs.append(f"[{ticker}] 에러 내용: {str(e)}")
             continue
 
-          df_t = compute_features(df_t)
-          latest = df_t.iloc[[-1]].copy()
+        progress_bar.empty()
+        status_text.empty()
 
-          if latest[FEATURE_COLS].isna().sum().sum() == 0:
-            x_val = latest[FEATURE_COLS]
-            score = ranker_lgb.predict(x_val)[0]
-            surv_prob = classifier_lgb.predict(x_val)[0] * 100
-            pred_tp = tp_regressor.predict(x_val)[0]
-
-            close_p = latest["Close"].values[0]
-            atr_p = latest["ATR_Pct"].values[0]
-
-            # 💡 실전 가이드라인 계산 로직 (손절폭 및 익절폭 산출)
-            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
-
-            sl_price = close_p * (1 + sl_pct / 100)
-            tp_price = close_p * (1 + tp_pct / 100)
-
-            results.append({
-                "Ticker": ticker,
-                "진입가($)": round(close_p, 2),
-                "손절가($)": round(sl_price, 2),
-                "조정 손절폭(%)": round(sl_pct, 2),
-                "동적익절가($)": round(tp_price, 2),
-                "동적 익절폭(%)": round(tp_pct, 2),
-                "생존확률": round(surv_prob, 1),
-                "Pred_Score": score,
-            })
-        except Exception as e:
-          error_logs.append(f"[{ticker}] 에러 내용: {str(e)}")
-          continue
-
-      progress_bar.empty()
-      status_text.empty()
-
-      if results:
-        res_df = pd.DataFrame(results)
-        # 생존확률 62% 이상 필터링 후 랭킹 스코어 기준 정렬
-        filtered = res_df[res_df["생존확률"] >= 62.0].sort_values(
-            by="Pred_Score", ascending=False
-        )
-
-        if len(filtered) > 0:
-          st.success(
-              f"총 {len(filtered)}개의 정예 챔피언 종목이 포착되었습니다!"
+        if results:
+          res_df = pd.DataFrame(results)
+          filtered = res_df[res_df["생존확률"] >= 62.0].sort_values(
+              by="Pred_Score", ascending=False
           )
 
-          # 💡 표 출력 포맷 정돈 (순위 부여 및 내부 스코어 컬럼 제외)
-          display_df = filtered.drop(columns=["Pred_Score"]).reset_index(
-              drop=True
-          )
-          display_df.index = display_df.index + 1
-          display_df.index.name = "순위"
-          display_df = display_df.reset_index()
+          if len(filtered) > 0:
+            df_display = filtered.drop(columns=["Pred_Score"]).reset_index(
+                drop=True
+            )
+            os.makedirs("models", exist_ok=True)
+            df_display.to_csv(cache_file, index=False)
 
-          # 퍼센트 기호 결합
-          display_df["조정 손절폭(%)"] = (
-              display_df["조정 손절폭(%)"].astype(str) + " %"
-          )
-          display_df["동적 익절폭(%)"] = (
-              "+" + display_df["동적 익절폭(%)"].astype(str) + " %"
-          )
-          display_df["생존확률"] = display_df["생존확률"].astype(str) + " %"
-
-          st.dataframe(display_df, use_container_width=True)
+            scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.success("✨ 실시간 재스캔 완료 및 최신 데이터가 저장되었습니다!")
+          else:
+            st.warning("조건을 충족하는 종목이 없습니다.")
+            df_display = pd.DataFrame()
         else:
-          st.warning(
-              "오늘 기준 조건(생존확률 62% 이상)을 충족하는 종목이 없습니다."
-              " (관망 추천)"
-          )
-      else:
-        st.error(
-            "데이터를 불러오지 못했습니다. 아래 디버깅 로그를 확인해주세요."
+          st.error("데이터를 불러오지 못했습니다.")
+          if error_logs:
+            st.code("\n".join(error_logs), language="text")
+          df_display = pd.DataFrame()
+
+    # 최종 결과 표 및 기준 시점 출력
+    if df_display is not None and not df_display.empty:
+      if scan_timestamp:
+        st.markdown(f"📅 **데이터 기준 시점 (최종 스캔):** `{scan_timestamp}`")
+
+      display_df = df_display.copy()
+      display_df.index = display_df.index + 1
+      display_df.index.name = "순위"
+      display_df = display_df.reset_index()
+
+      if not str(display_df["조정 손절폭(%)"].iloc[0]).endswith("%"):
+        display_df["조정 손절폭(%)"] = (
+            display_df["조정 손절폭(%)"].astype(str) + " %"
         )
-        if error_logs:
-          st.error(f"🚨 상세 에러 로그 총 {len(error_logs)}건 발생:")
-          st.code("\n".join(error_logs), language="text")
+        display_df["동적 익절폭(%)"] = (
+            "+" + display_df["동적 익절폭(%)"].astype(str) + " %"
+        )
+        display_df["생존확률"] = display_df["생존확률"].astype(str) + " %"
+
+      st.dataframe(display_df, use_container_width=True)
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
