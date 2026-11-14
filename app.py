@@ -476,7 +476,7 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석 (수정된 안전 영역)
+  # 3. 특정 종목 과거 시점 분석 (사후 검증 결과 카드 복구 완료)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header(
@@ -525,7 +525,7 @@ else:
             surv_passed = surv_prob >= 58.0
             is_champion = surv_passed and atr_limit_passed
 
-            # 향후 기간 수익률 확인 (멀티인덱스 및 컬럼 평탄화 방어 적용)
+            # 향후 기간 수익률 확인
             full_raw = yf.download(
                 target_ticker,
                 start="2018-01-01",
@@ -554,7 +554,6 @@ else:
             if len(future_sub) > 1:
               valid_period = future_sub.iloc[1:]
 
-              # 시리즈 형태 에러 방어용 스칼라 안전 추출 함수
               def get_scalar(val):
                 if isinstance(val, pd.Series):
                   return float(val.iloc[0])
@@ -598,6 +597,7 @@ else:
             else:
               st.warning(f"⚠️ **[{target_ticker}] 조건 미달 (관망 권장)**")
 
+            # 💡 [복구 완료] 첫 번째 지표 카드 (기본 정보)
             st.markdown(METRIC_CSS, unsafe_allow_html=True)
             card_html_1 = (
                 '<div class="metric-container">'
@@ -620,6 +620,48 @@ else:
                 "</div>"
             )
             st.markdown(card_html_1, unsafe_allow_html=True)
+
+            # 💡 [복구 완료] 두 번째 지표 카드 (사후 백테스트 성과)
+            ret_n_color = "#00FF7F" if ret_n >= 0 else "#FF6B6B"
+            card_html_2 = (
+                '<div class="metric-container">'
+                '<div class="metric-card">'
+                '<div class="metric-title">산출 손절가</div>'
+                f'<div class="metric-value" style="color:#FF6B6B;">${sl_price:.2f}'
+                f' <span style="font-size:14px;">({sl_pct:.2f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">산출 익절가</div>'
+                f'<div class="metric-value" style="color:#4ECDC4;">${tp_price:.2f}'
+                f' <span style="font-size:14px;">(+{tp_pct:.2f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                f'<div class="metric-title">{HOLDING_PERIOD}일 최고가 / 익절달성</div>'
+                f'<div class="metric-value" style="font-size:17px;">${high_n:.2f}'
+                f' <br><span style="font-size:13px; color:#4ECDC4;">{tp_str}</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                f'<div class="metric-title">{HOLDING_PERIOD}일 만기 수익률</div>'
+                f'<div class="metric-value" style="color:{ret_n_color};">{ret_n:+.2f}%</div>'
+                "</div>"
+                "</div>"
+            )
+            st.markdown(card_html_2, unsafe_allow_html=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+              st.info(
+                  f"🛡️ **손절 터치 여부:** {sl_str} ({HOLDING_PERIOD}일 최저가:"
+                  f" ${low_n:.2f})"
+              )
+            with col2:
+              st.success(
+                  f"🎯 **목표 익절 도달:** {tp_str} (목표가: ${tp_price:.2f})"
+              )
+
+            st.subheader(f"📈 향후 {HOLDING_PERIOD}거래일 주가 경로 시각화")
+            st.line_chart(future_sub.set_index(date_col_name)["Close"])
+
           else:
             st.warning(
                 "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
