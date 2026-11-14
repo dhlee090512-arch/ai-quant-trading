@@ -50,7 +50,7 @@ ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS, load_error = (
     load_models_and_features()
 )
 
-# 사이드바 메뉴 구성 (모델 로드 여부와 상관없이 항상 노출)
+# 사이드바 메뉴 구성
 menu = st.sidebar.selectbox(
     "메뉴 선택",
     [
@@ -314,54 +314,4 @@ else:
               tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
 
               sl_price = close_p * (1 + sl_pct / 100)
-              tp_price = close_p * (1 + tp_pct / 100)
-
-              results.append({
-                  "Ticker": ticker,
-                  "진입가($)": round(close_p, 2),
-                  "손절가($)": round(sl_price, 2),
-                  "조정 손절폭(%)": round(sl_pct, 2),
-                  "동적익절가($)": round(tp_price, 2),
-                  "동적 익절폭(%)": round(tp_pct, 2),
-                  "생존확률": round(surv_prob, 1),
-                  "Pred_Score": score,
-              })
-          except Exception as e:
-            error_logs.append(f"[{ticker}] 에러 내용: {str(e)}")
-            continue
-
-        progress_bar.empty()
-        status_text.empty()
-
-        if results:
-          res_df = pd.DataFrame(results)
-          filtered = res_df[res_df["생존확률"] >= 62.0].sort_values(
-              by="Pred_Score", ascending=False
-          )
-
-          if len(filtered) > 0:
-            df_display = filtered.drop(columns=["Pred_Score"]).reset_index(
-                drop=True
-            )
-            os.makedirs("models", exist_ok=True)
-            df_display.to_csv(cache_file, index=False)
-
-            scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.success("✨ 실시간 재스캔 완료 및 최신 데이터가 저장되었습니다!")
-          else:
-            st.warning("조건을 충족하는 종목이 없습니다.")
-            df_display = pd.DataFrame()
-        else:
-          st.error("데이터를 불러오지 못했습니다.")
-          if error_logs:
-            st.code("\n".join(error_logs), language="text")
-          df_display = pd.DataFrame()
-
-    if df_display is not None and not df_display.empty:
-      if scan_timestamp:
-        st.markdown(f"📅 **데이터 기준 시점 (최종 스캔):** `{scan_timestamp}`")
-
-      display_df = df_display.copy()
-      display_df.index = display_df.index + 1
-      display_df.index.name = "순위"
-      display_df = display_df.reset
+              tp
