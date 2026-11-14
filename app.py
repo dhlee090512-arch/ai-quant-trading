@@ -31,33 +31,43 @@ session.headers.update({
 })
 
 
-# 1. 깃허브에 저장된 모델 및 피처 목록 로드 (캐싱 적용)
+# 1. 깃허브에 저장된 모델, 피처 목록 및 설정 메타데이터 로드 (캐싱 적용)
 @st.cache_resource
-def load_models_and_features():
+def load_models_and_metadata():
   try:
     ranker = lgb.Booster(model_file="models/ranker_model.txt")
     classifier = lgb.Booster(model_file="models/classifier_model.txt")
     tp_reg = lgb.Booster(model_file="models/tp_regressor_model.txt")
 
-    with open("models/feature_cols.json", "r") as f:
+    with open("models/feature_cols.json", "r", encoding="utf-8") as f:
       feature_cols = json.load(f)
 
-    return ranker, classifier, tp_reg, feature_cols, None
+    if os.path.exists("models/model_config.json"):
+      with open("models/model_config.json", "r", encoding="utf-8") as f:
+        config = json.load(f)
+    else:
+      raise FileNotFoundError(
+          "models/model_config.json 파일을 찾을 수 없습니다. 코랩에서 셀 7을"
+          " 실행해 메타데이터를 업로드해주세요."
+      )
+
+    return ranker, classifier, tp_reg, feature_cols, config, None
   except Exception as e:
-    return None, None, None, None, str(e)
+    return None, None, None, None, None, str(e)
 
 
-ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS, load_error = (
-    load_models_and_features()
+ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS, MODEL_CONFIG, load_error = (
+    load_models_and_metadata()
 )
 
-# 사이드바 메뉴 구성
+# 사이드바 메뉴 구성 (코랩 셀 4, 5, 6 대응 기능 완비)
 menu = st.sidebar.selectbox(
     "메뉴 선택",
     [
         "🔥 당일 종목 추천 (스캐너)",
         "🔍 특정 종목 당일 분석",
         "⏳ 특정 종목 과거 시점 분석",
+        "🛡️ 기존 보유 포지션 진단 및 매매 가이드",
     ],
 )
 
@@ -95,90 +105,13 @@ METRIC_CSS = """
 # 모델 로드 실패 시 에러 안내 문구 출력
 if load_error is not None:
   st.error(
-      "🚨 모델 파일 로딩 실패! GitHub 레포지토리의 `models/` 폴더 안에 모델"
-      f" 파일들이 정상적으로 업로드되었는지 확인해주세요.\n\n**에러 내용:**"
-      f" {load_error}"
+      "🚨 모델 파일 및 메타데이터 로딩 실패! GitHub 레포지토리의 `models/`"
+      f" 폴더 상태를 확인해주세요.\n\n**에러 내용:** {load_error}"
   )
 else:
-  # 분석 유니버스 티커 리스트
-  UNIVERSE_TICKERS = [
-      "AAPL",
-      "MSFT",
-      "GOOGL",
-      "AMZN",
-      "NVDA",
-      "META",
-      "TSLA",
-      "BRK-B",
-      "LLY",
-      "AVGO",
-      "JPM",
-      "XOM",
-      "UNH",
-      "V",
-      "PG",
-      "JNJ",
-      "MA",
-      "HD",
-      "COST",
-      "MRK",
-      "ABBV",
-      "NFLX",
-      "AMD",
-      "BAC",
-      "CRM",
-      "CVX",
-      "WMT",
-      "COIN",
-      "PLTR",
-      "TSM",
-      "INTC",
-      "QCOM",
-      "IBM",
-      "AMAT",
-      "LRCX",
-      "MU",
-      "ARM",
-      "MRVL",
-      "SMCI",
-      "SOXL",
-      "TQQQ",
-      "SQQQ",
-      "BA",
-      "DIS",
-      "NKE",
-      "SBUX",
-      "PYPL",
-      "SHOP",
-      "UBER",
-      "ABNB",
-      "SNOW",
-      "NET",
-      "CRWD",
-      "DDOG",
-      "ZS",
-      "PANW",
-      "NOW",
-      "MDB",
-      "TEAM",
-      "ADBE",
-      "INTU",
-      "ORCL",
-      "CSCO",
-      "ACN",
-      "TXN",
-      "NEE",
-      "UNP",
-      "HON",
-      "UPS",
-      "CAT",
-      "GE",
-      "RTX",
-      "LOW",
-      "SPGI",
-      "BLK",
-      "MARA",
-  ]
+  HOLDING_PERIOD = MODEL_CONFIG["holding_period"]
+  MIN_SURVIVE_PROB = MODEL_CONFIG["min_survive_prob"]
+  UNIVERSE_TICKERS = MODEL_CONFIG["universe_tickers"]
 
 
   # 피처 엔지니어링 함수
@@ -276,7 +209,9 @@ else:
   # 1. 당일 종목 추천 (스캐너)
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
-    st.header("🔥 당일 기준 정예 챔피언 스캐너")
+    st.header(
+        f"🔥 당일 기준 정예 챔피언 스캐너 ({HOLDING_PERIOD}거래일 스윙 기준)"
+    )
     st.write(
         "저장된 최신 스캔 데이터를 즉시 불러옵니다. 강제로 새로 스캔하려면 아래"
         " 버튼을 누르세요."
@@ -333,17 +268,21 @@ else:
             df_t = compute_features(df_t)
             latest = df_t.iloc[[-1]]
 
+            atr_p = float(latest["ATR_Pct"].values[0])
+            if (atr_p * 100) > 4.5:
+              continue
+
             if latest[FEATURE_COLS].isna().sum().sum() == 0:
               x_val = latest[FEATURE_COLS]
               score = ranker_lgb.predict(x_val)[0]
-              surv_prob = classifier_lgb.predict(x_val)[0] * 100
+              surv_prob = classifier_lgb.predict_proba(x_val)[0][1] * 100
               pred_tp = tp_regressor.predict(x_val)[0]
 
               close_p = float(latest["Close"].values[0])
-              atr_p = float(latest["ATR_Pct"].values[0])
 
               sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-              tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+              min_required_tp = abs(sl_pct) * 1.5
+              tp_pct = max(pred_tp, min_required_tp)
 
               sl_price = close_p * (1 + sl_pct / 100)
               tp_price = close_p * (1 + tp_pct / 100)
@@ -367,9 +306,14 @@ else:
 
         if results:
           res_df = pd.DataFrame(results)
-          filtered = res_df[res_df["생존확률"] >= 62.0].sort_values(
+          top_k = max(1, int(len(res_df) * 0.10))
+          top_candidates = res_df.sort_values(
               by="Pred_Score", ascending=False
-          )
+          ).head(top_k)
+
+          filtered = top_candidates[
+              top_candidates["생존확률"] >= MIN_SURVIVE_PROB
+          ].sort_values(by="Pred_Score", ascending=False)
 
           if len(filtered) > 0:
             df_display = filtered.drop(columns=["Pred_Score"]).reset_index(
@@ -381,7 +325,10 @@ else:
             scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.success("✨ 실시간 재스캔 완료 및 최신 데이터가 저장되었습니다!")
           else:
-            st.warning("조건을 충족하는 종목이 없습니다.")
+            st.warning(
+                "조건(상위 10% 및 생존 확률 >="
+                f" {MIN_SURVIVE_PROB}%)을 충족하는 종목이 없습니다."
+            )
             df_display = pd.DataFrame()
         else:
           st.error("데이터를 불러오지 못했습니다.")
@@ -413,9 +360,9 @@ else:
   # 2. 특정 종목 당일 분석
   # -------------------------------------------------------------
   elif menu == "🔍 특정 종목 당일 분석":
-    st.header("🔍 특정 종목 당일 딥다이브 분석")
+    st.header(f"🔍 특정 종목 당일 딥다이브 분석 ({HOLDING_PERIOD}거래일 기준)")
     target_ticker = st.text_input(
-        "분석할 티커 입력 (예: AAPL, TSLA)", "TSLA"
+        "분석할 티커 입력 (예: AAPL, TSLA, TSM)", "TSM"
     ).upper()
 
     if st.button("분석 시작"):
@@ -451,20 +398,21 @@ else:
             latest = df_t.iloc[[-1]]
 
             x_val = latest[FEATURE_COLS]
-            surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+            surv_prob = float(
+                classifier_lgb.predict_proba(x_val)[0][1] * 100
+            )
             pred_tp = float(tp_regressor.predict(x_val)[0])
             close_p = float(latest["Close"].values[0])
             atr_p = float(latest["ATR_Pct"].values[0])
 
             sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+            min_required_tp = abs(sl_pct) * 1.5
+            tp_pct = max(pred_tp, min_required_tp)
 
             sl_price = close_p * (1 + sl_pct / 100)
             tp_price = close_p * (1 + tp_pct / 100)
 
-            st.subheader(
-                f"📊 {long_name} ({target_ticker}) 분석 리포트"
-            )
+            st.subheader(f"📊 {long_name} ({target_ticker}) 분석 리포트")
 
             st.markdown(
                 f"**현재 종가 (진입가):** <span"
@@ -505,10 +453,13 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석 (고급 카드 UI 및 시각화 적용)
+  # 3. 특정 종목 과거 시점 분석
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
-    st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
+    st.header(
+        f"⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증 ({HOLDING_PERIOD}거래일"
+        " 사후 검증)"
+    )
     target_ticker = st.text_input(
         "분석할 티커 입력 (예: TSM, TSLA)", "TSM", key="past_ticker"
     ).upper()
@@ -547,41 +498,46 @@ else:
             x_val = row[FEATURE_COLS]
 
             score = float(ranker_lgb.predict(x_val)[0])
-            surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+            surv_prob = float(
+                classifier_lgb.predict_proba(x_val)[0][1] * 100
+            )
             pred_tp = float(tp_regressor.predict(x_val)[0])
             close_p = float(row["Close"].values[0])
 
             atr_p = float(row["ATR_Pct"].values[0])
-            atr_limit_passed = atr_p * 100 <= 4.5
+            atr_limit_passed = (atr_p * 100) <= 4.5
 
             sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+            min_required_tp = abs(sl_pct) * 1.5
+            tp_pct = max(pred_tp, min_required_tp)
+
             sl_price = close_p * (1 + sl_pct / 100)
             tp_price = close_p * (1 + tp_pct / 100)
 
-            surv_passed = surv_prob >= 58.0
+            surv_passed = surv_prob >= MIN_SURVIVE_PROB
             is_champion = surv_passed and atr_limit_passed
 
-            # 💡 향후 5거래일 사후 검증 데이터 추출
-            future_sub = df_t.loc[target_date:].head(6)
+            future_sub = df_t.loc[target_date:].head(HOLDING_PERIOD + 1)
             if len(future_sub) > 1:
-              valid_5d = future_sub.iloc[1:]  # 향후 5거래일
-              high_5d = float(valid_5d["High"].max())
-              low_5d = float(valid_5d["Low"].min())
-              close_5d = float(valid_5d["Close"].iloc[-1])
-              ret_5d = (close_5d - close_p) / close_p * 100
+              valid_period = future_sub.iloc[1:]
+              high_n = float(valid_period["High"].max())
+              low_n = float(valid_period["Low"].min())
+              close_n = float(valid_period["Close"].iloc[-1])
+              ret_n = (close_n - close_p) / close_p * 100
 
-              tp_reached = high_5d >= tp_price
-              sl_touched = low_5d <= sl_price
+              tp_reached = high_n >= tp_price
+              sl_touched = low_n <= sl_price
 
-              tp_str = f"성공 🎯 ({high_5d:.2f} 도달)" if tp_reached else "미달 ❌"
+              tp_str = (
+                  f"성공 🎯 ({high_n:.2f} 도달)" if tp_reached else "미달 ❌"
+              )
               sl_str = (
                   f"위험 ⚠️ (터치 발생)"
                   if sl_touched
                   else "안전 ✅ (터치 없음)"
               )
             else:
-              high_5d, low_5d, close_5d, ret_5d = (
+              high_n, low_n, close_n, ret_n = (
                   close_p,
                   close_p,
                   close_p,
@@ -589,16 +545,15 @@ else:
               )
               tp_str, sl_str = "데이터 부족", "데이터 부족"
 
-            # 💡 상단 타이틀 및 종합 판정 배너
             st.subheader(
                 f"📊 {long_name} ({target_ticker}) - {target_date} 기준"
-                " 검증 리포트"
+                f" {HOLDING_PERIOD}일 검증 리포트"
             )
 
             if is_champion:
               st.success(
                   f"✨ **[{target_ticker}] 매수 진입 적격 챔피언 시그널 발생!**"
-                  " (손절 생존 확률 및 변동성 기준 충족)"
+                  f" (손절 생존 확률 >= {MIN_SURVIVE_PROB}% 및 변동성 기준 충족)"
               )
             else:
               st.warning(
@@ -606,7 +561,6 @@ else:
                   " 미달)"
               )
 
-            # 💡 1단 카드 레이아웃 (주가 및 모델 점수)
             st.markdown(METRIC_CSS, unsafe_allow_html=True)
 
             card_html_1 = (
@@ -631,7 +585,6 @@ else:
             )
             st.markdown(card_html_1, unsafe_allow_html=True)
 
-            # 💡 2단 카드 레이아웃 (손절가 / 익절가 및 사후 검증 결과)
             card_html_2 = (
                 '<div class="metric-container">'
                 '<div class="metric-card">'
@@ -645,32 +598,30 @@ else:
                 f' <span style="font-size:14px;">(+{tp_pct:.2f}%)</span></div>'
                 "</div>"
                 '<div class="metric-card">'
-                '<div class="metric-title">5일 최고가 / 익절달성</div>'
-                f'<div class="metric-value" style="font-size:17px;">${high_5d:.2f}'
+                f'<div class="metric-title">{HOLDING_PERIOD}일 최고가 / 익절달성</div>'
+                f'<div class="metric-value" style="font-size:17px;">${high_n:.2f}'
                 f' <br><span style="font-size:13px; color:#4ECDC4;">{tp_str}</span></div>'
                 "</div>"
                 '<div class="metric-card">'
-                '<div class="metric-title">5일 만기 수익률</div>'
-                f'<div class="metric-value" style="color:{"#00FF7F" if ret_5d >= 0 else "#FF6B6B"};">{ret_5d:+.2f}%</div>'
+                f'<div class="metric-title">{HOLDING_PERIOD}일 만기 수익률</div>'
+                f'<div class="metric-value" style="color:{"#00FF7F" if ret_n >= 0 else "#FF6B6B"};">{ret_n:+.2f}%</div>'
                 "</div>"
                 "</div>"
             )
             st.markdown(card_html_2, unsafe_allow_html=True)
 
-            # 세부 사후 검증 지표 텍스트 요약
             col1, col2 = st.columns(2)
             with col1:
               st.info(
-                  f"🛡️ **손절 터치 여부:** {sl_str} (5일 최저가:"
-                  f" ${low_5d:.2f})"
+                  f"🛡️ **손절 터치 여부:** {sl_str} ({HOLDING_PERIOD}일 최저가:"
+                  f" ${low_n:.2f})"
               )
             with col2:
               st.success(
                   f"🎯 **목표 익절 도달:** {tp_str} (목표가: ${tp_price:.2f})"
               )
 
-            # 💡 향후 5일간 주가 경로 시각화 차트
-            st.subheader("📈 향후 5거래일 주가 경로 시각화")
+            st.subheader(f"📈 향후 {HOLDING_PERIOD}거래일 주가 경로 시각화")
             st.line_chart(future_sub["Close"])
 
           else:
@@ -679,4 +630,117 @@ else:
             )
         except Exception as e:
           st.error(f"과거 데이터 조회 중 오류 발생: {e}")
+          st.code(traceback.format_exc(), language="python")
+
+  # -------------------------------------------------------------
+  # 4. 기존 보유 포지션 진단 및 매매 가이드 (코랩 셀 6 기능 대응)
+  # -------------------------------------------------------------
+  elif menu == "🛡️ 기존 보유 포지션 진단 및 매매 가이드":
+    st.header(
+        f"🛡️ 기존 보유 포지션 진단 및 매매 가이드 ({HOLDING_PERIOD}거래일 스윙"
+        " 기준)"
+    )
+    st.write(
+        "보유 중인 종목과 매수가를 입력하면 현재 시점의 모델 전망을 바탕으로"
+        " [홀딩 vs 매도]를 진단합니다."
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+      pos_ticker = st.text_input(
+          "보유 종목 티커", "AAPL", key="pos_ticker"
+      ).upper()
+    with col2:
+      pos_date = st.date_input(
+          "매수 날짜", datetime.now() - timedelta(days=15), key="pos_date"
+      )
+    with col3:
+      pos_price = st.number_input(
+          "매수가격 ($)", value=300.0, step=1.0, key="pos_price"
+      )
+
+    if st.button("포지션 진단 실행"):
+      with st.spinner(f"{pos_ticker} 실시간 분석 중..."):
+        try:
+          df_t = yf.download(
+              pos_ticker,
+              period="6mo",
+              progress=False,
+              auto_adjust=True,
+              session=session,
+          )
+          if isinstance(df_t.columns, pd.MultiIndex):
+            df_t.columns = df_t.columns.get_level_values(0)
+
+          if len(df_t) < 30:
+            st.error(f"'{pos_ticker}' 종목 데이터를 충분히 가져오지 못했습니다.")
+          else:
+            df_t = compute_features(df_t)
+            latest_row = df_t.iloc[[-1]]
+
+            curr_price = float(latest_row["Close"].values[0])
+            holding_return = (
+                (curr_price - pos_price) / pos_price * 100
+            )
+
+            x_val = latest_row[FEATURE_COLS]
+            score = float(ranker_lgb.predict(x_val)[0])
+            surv_prob = float(
+                classifier_lgb.predict_proba(x_val)[0][1] * 100
+            )
+            pred_tp = float(tp_regressor.predict(x_val)[0])
+            atr_val = float(latest_row["ATR_Pct"].values[0])
+
+            is_valid_atr = (atr_val * 100) <= 4.5
+            sl_pct = max(-(atr_val * 1.5 * 100), -8.0)
+            min_required_tp = abs(sl_pct) * 1.5
+            tp_pct = max(pred_tp, min_required_tp)
+
+            sl_price = curr_price * (1 + sl_pct / 100.0)
+            tp_price = curr_price * (1 + tp_pct / 100.0)
+            passed_survive = surv_prob >= MIN_SURVIVE_PROB
+
+            # 매매 전략 판정 (코랩 셀 6 로직 동일)
+            if not is_valid_atr:
+              action = (
+                  "SELL / REDUCE (변동성 위험 - 비중 축소 또는 매도 추천)"
+              )
+            elif surv_prob < 50.0:
+              action = "SELL / EXIT (하방 리스크 고조 - 즉시 매도 권장)"
+            elif holding_return <= sl_pct:
+              action = "STOP LOSS (손절가 이탈 - 즉시 손절 실행)"
+            elif holding_return >= tp_pct:
+              action = "TAKE PROFIT (목표 익절가 달성 - 수익 실현 권장)"
+            elif passed_survive:
+              action = "HOLD & RIDE (강력 홀딩 - 모멘텀 유지)"
+            else:
+              action = "WATCH / CAUTION (중립 관망)"
+
+            st.subheader(f"🛡️ [{pos_ticker}] 기존 보유 포지션 진단 리포트")
+            st.info(f"🎯 **[최종 의사결정 제안]: {action}**")
+
+            st.markdown(METRIC_CSS, unsafe_allow_html=True)
+            card_html_pos = (
+                '<div class="metric-container">'
+                '<div class="metric-card">'
+                '<div class="metric-title">매수가 / 현재가</div>'
+                f'<div class="metric-value">${pos_price:.2f} → ${curr_price:.2f}</div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">미실현 손익</div>'
+                f'<div class="metric-value" style="color:{"#00FF7F" if holding_return >= 0 else "#FF6B6B"};">{holding_return:+.2f}%</div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">손절 생존 확률</div>'
+                f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">갱신된 추천 손절/익절</div>'
+                f'<div class="metric-value" style="font-size:15px;">SL: ${sl_price:.2f}<br>TP: ${tp_price:.2f}</div>'
+                "</div>"
+                "</div>"
+            )
+            st.markdown(card_html_pos, unsafe_allow_html=True)
+        except Exception as e:
+          st.error(f"포지션 진단 중 오류 발생: {e}")
           st.code(traceback.format_exc(), language="python")
