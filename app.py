@@ -226,6 +226,13 @@ else:
     if not run_scan and os.path.exists(cache_file):
       try:
         df_display = pd.read_csv(cache_file)
+
+        # 💡 캐시 로딩 시 생존 확률 방어 필터 적용
+        if "생존확률" in df_display.columns:
+          df_display = df_display[
+              df_display["생존확률"] >= MIN_SURVIVE_PROB
+          ].reset_index(drop=True)
+
         mtime = os.path.getmtime(cache_file)
         scan_timestamp = dt.datetime.fromtimestamp(mtime).strftime(
             "%Y-%m-%d %H:%M:%S"
@@ -306,6 +313,8 @@ else:
 
         if results:
           res_df = pd.DataFrame(results)
+
+          # 💡 [정석 필터 로직] 전체 종목을 랭킹 점수 기준 상위 10% 선별 후, 생존 확률 62% 이상 필터링
           top_k = max(1, int(len(res_df) * 0.10))
           top_candidates = res_df.sort_values(
               by="Pred_Score", ascending=False
@@ -323,11 +332,11 @@ else:
             df_display.to_csv(cache_file, index=False)
 
             scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.success("✨ 실시간 재스캔 완료 및 최신 데이터가 저장되었습니다!")
+            st.success("✨ 실시간 재스캔 완료 및 정예 챔피언 선별 완료!")
           else:
             st.warning(
-                "조건(상위 10% 및 생존 확률 >="
-                f" {MIN_SURVIVE_PROB}%)을 충족하는 종목이 없습니다."
+                "⚠️ 조건(상위 10% 랭킹 및 생존 확률 >="
+                f" {MIN_SURVIVE_PROB}%)을 통과한 종목이 없습니다."
             )
             df_display = pd.DataFrame()
         else:
@@ -581,7 +590,6 @@ else:
             )
             st.markdown(card_html_1, unsafe_allow_html=True)
 
-            # 색상값 변수 분리하여 f-string 구문 에러 방지
             ret_n_color = "#00FF7F" if ret_n >= 0 else "#FF6B6B"
 
             card_html_2 = (
@@ -716,7 +724,6 @@ else:
             st.subheader(f"🛡️ [{pos_ticker}] 기존 보유 포지션 진단 리포트")
             st.info(f"🎯 **[최종 의사결정 제안]: {action}**")
 
-            # 색상값 변수 분리하여 f-string 구문 에러 방지
             holding_ret_color = "#00FF7F" if holding_return >= 0 else "#FF6B6B"
 
             st.markdown(METRIC_CSS, unsafe_allow_html=True)
