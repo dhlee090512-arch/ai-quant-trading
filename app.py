@@ -278,7 +278,7 @@ else:
         lambda x: (x - x.mean()) / (x.std() + 1e-8)
     )
 
-    # 💡 [방어 코드] 모든 피처 컬럼을 강제 숫자형(float)으로 변환
+    # 방어 코드: 모든 피처 컬럼 강제 숫자형 변환
     for col in FEATURE_COLS:
       if col in df_all.columns:
         df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
@@ -288,7 +288,7 @@ else:
 
 
   # -------------------------------------------------------------
-  # 1. 당일 종목 추천 (스캐너) - 코랩 셀 1·2 완전 동기화 추론
+  # 1. 당일 종목 추천 (스캐너)
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header(
@@ -312,7 +312,7 @@ else:
           latest_date = df_clean["Date"].max()
           scan_timestamp = pd.to_datetime(latest_date).strftime("%Y-%m-%d")
 
-          MAX_DAILY_ATR_PCT = 0.045  # 4.5%
+          MAX_DAILY_ATR_PCT = 0.045
           latest_subset = df_clean[
               (df_clean["Date"] == latest_date)
               & (df_clean["ATR_Pct"] <= MAX_DAILY_ATR_PCT)
@@ -322,7 +322,6 @@ else:
               len(latest_subset) > 0
               and latest_subset[FEATURE_COLS].notna().all().all()
           ):
-            # 💡 타입 안전성 확보를 위한 숫자형 변환 적용
             x_matrix = latest_subset[FEATURE_COLS].apply(
                 pd.to_numeric, errors="coerce"
             )
@@ -349,7 +348,7 @@ else:
               for idx, row in filtered_latest.iterrows():
                 rank_num = idx + 1
                 entry_price = float(row["Close"])
-                atr_val = float(row["ATR_Pct"]) * 100  # % 환산
+                atr_val = float(row["ATR_Pct"]) * 100
 
                 sl_pct = max(-(atr_val * 1.5), MAX_SL_LIMIT)
                 model_pred_tp = float(row["Predicted_TP"])
@@ -477,7 +476,7 @@ else:
           st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석
+  # 3. 특정 종목 과거 시점 분석 (수정된 안전 영역)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header(
@@ -502,7 +501,11 @@ else:
 
           if not match_row.empty:
             row = match_row.iloc[0]
-            x_val = row[FEATURE_COLS].to_frame().T.apply(pd.to_numeric, errors="coerce")
+            x_val = (
+                row[FEATURE_COLS]
+                .to_frame()
+                .T.apply(pd.to_numeric, errors="coerce")
+            )
 
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
@@ -522,26 +525,44 @@ else:
             surv_passed = surv_prob >= 58.0
             is_champion = surv_passed and atr_limit_passed
 
-            # 향후 기간 수익률 확인
-            full_t_df = yf.download(
+            # 향후 기간 수익률 확인 (멀티인덱스 및 컬럼 평탄화 방어 적용)
+            full_raw = yf.download(
                 target_ticker,
                 start="2018-01-01",
                 progress=False,
                 session=session,
             )
-            full_t_df = full_t_df.reset_index()
+            if isinstance(full_raw.columns, pd.MultiIndex):
+              full_raw.columns = full_raw.columns.get_level_values(0)
+            full_raw.columns = [
+                col[0] if isinstance(col, tuple) else col
+                for col in full_raw.columns
+            ]
+
+            full_t_df = full_raw.reset_index()
+            date_col_name = (
+                "Date" if "Date" in full_t_df.columns else full_t_df.columns[0]
+            )
             full_t_df["DateOnly"] = pd.to_datetime(
-                full_t_df.iloc[:, 0]
+                full_t_df[date_col_name]
             ).dt.date
+
             future_sub = full_t_df[
                 full_t_df["DateOnly"] >= target_date
             ].head(HOLDING_PERIOD + 1)
 
             if len(future_sub) > 1:
               valid_period = future_sub.iloc[1:]
-              high_n = float(valid_period["High"].max())
-              low_n = float(valid_period["Low"].min())
-              close_n = float(valid_period["Close"].iloc[-1])
+
+              # 시리즈 형태 에러 방어용 스칼라 안전 추출 함수
+              def get_scalar(val):
+                if isinstance(val, pd.Series):
+                  return float(val.iloc[0])
+                return float(val)
+
+              high_n = get_scalar(valid_period["High"].max())
+              low_n = get_scalar(valid_period["Low"].min())
+              close_n = get_scalar(valid_period["Close"].iloc[-1])
               ret_n = (close_n - close_p) / close_p * 100
 
               tp_reached = high_n >= tp_price
@@ -575,9 +596,7 @@ else:
                   " (손절 생존 확률 >= 58% 및 변동성 기준 충족)"
               )
             else:
-              st.warning(
-                  f"⚠️ **[{target_ticker}] 조건 미달 (관망 권장)**"
-              )
+              st.warning(f"⚠️ **[{target_ticker}] 조건 미달 (관망 권장)**")
 
             st.markdown(METRIC_CSS, unsafe_allow_html=True)
             card_html_1 = (
@@ -646,7 +665,9 @@ else:
                 (curr_price - pos_price) / pos_price * 100
             )
 
-            x_val = latest_row[FEATURE_COLS].apply(pd.to_numeric, errors="coerce")
+            x_val = latest_row[FEATURE_COLS].apply(
+                pd.to_numeric, errors="coerce"
+            )
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
             pred_tp = float(tp_regressor.predict(x_val)[0])
