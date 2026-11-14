@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import datetime as dt
 import json
 import os
-import traceback  # 👈 디버깅을 위한 traceback 모듈 추가
+import traceback
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -60,6 +60,37 @@ menu = st.sidebar.selectbox(
         "⏳ 특정 종목 과거 시점 분석",
     ],
 )
+
+# 공통 카드 CSS 스타일 정의
+METRIC_CSS = """
+<style>
+.metric-container {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 15px;
+    margin-bottom: 25px;
+}
+.metric-card {
+    background-color: #1E1E1E;
+    border: 1px solid #333333;
+    border-radius: 8px;
+    padding: 15px;
+    flex: 1;
+    text-align: center;
+}
+.metric-title {
+    font-size: 14px;
+    color: #AAAAAA;
+    margin-bottom: 5px;
+}
+.metric-value {
+    font-size: 20px;
+    font-weight: bold;
+    color: #FFFFFF;
+}
+</style>
+"""
 
 # 모델 로드 실패 시 에러 안내 문구 출력
 if load_error is not None:
@@ -442,50 +473,125 @@ else:
                 unsafe_allow_html=True,
             )
 
-            st.markdown(
-                """
-                <style>
-                .metric-container {
-                    display: flex;
-                    justify-content: space-between;
-                    gap: 10px;
-                    margin-top: 15px;
-                    margin-bottom: 25px;
-                }
-                .metric-card {
-                    background-color: #1E1E1E;
-                    border: 1px solid #333333;
-                    border-radius: 8px;
-                    padding: 15px;
-                    flex: 1;
-                    text-align: center;
-                }
-                .metric-title {
-                    font-size: 14px;
-                    color: #AAAAAA;
-                    margin-bottom: 5px;
-                }
-                .metric-value {
-                    font-size: 20px;
-                    font-weight: bold;
-                    color: #FFFFFF;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
+            st.markdown(METRIC_CSS, unsafe_allow_html=True)
+
+            metric_html = (
+                '<div class="metric-container">'
+                '<div class="metric-card">'
+                '<div class="metric-title">모델 생존 확률</div>'
+                f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">권장 손절가</div>'
+                f'<div class="metric-value">${sl_price:.2f} <span'
+                f' style="font-size:14px; color:#FF6B6B;">({sl_pct:.2f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">예상 동적익절가</div>'
+                f'<div class="metric-value">${tp_price:.2f} <span'
+                f' style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.2f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">예상 목표익절폭</div>'
+                f'<div class="metric-value" style="color: #4ECDC4;">+{pred_tp:.2f}%</div>'
+                "</div>"
+                "</div>"
+            )
+            st.markdown(metric_html, unsafe_allow_html=True)
+
+            st.line_chart(df_t["Close"].tail(30))
+        except Exception as e:
+          st.error(f"분석 중 오류 발생: {e}")
+          st.code(traceback.format_exc(), language="python")
+
+  # -------------------------------------------------------------
+  # 3. 특정 종목 과거 시점 분석
+  # -------------------------------------------------------------
+  elif menu == "⏳ 특정 종목 과거 시점 분석":
+    st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
+    target_ticker = st.text_input(
+        "분석할 티커 입력 (예: TSLA)", "TSLA", key="past_ticker"
+    ).upper()
+    target_date = st.date_input(
+        "조회할 과거 날짜 선택", datetime.now() - timedelta(days=30)
+    )
+
+    if st.button("과거 시점 시그널 조회"):
+      with st.spinner(f"{target_ticker} 과거 데이터 조회 중..."):
+        try:
+          t_obj = yf.Ticker(target_ticker, session=session)
+          try:
+            long_name = (
+                t_obj.info.get("longName")
+                or t_obj.info.get("shortName")
+                or target_ticker
+            )
+          except Exception:
+            long_name = target_ticker
+
+          df_t = yf.download(
+              target_ticker,
+              period="2y",
+              progress=False,
+              auto_adjust=True,
+              session=session,
+          )
+          if isinstance(df_t.columns, pd.MultiIndex):
+            df_t.columns = df_t.columns.get_level_values(0)
+
+          df_t = compute_features(df_t)
+          df_t.index = pd.to_datetime(df_t.index).date()
+
+          if target_date in df_t.index:
+            row = df_t.loc[[target_date]]
+            x_val = row[FEATURE_COLS]
+
+            surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+            pred_tp = float(tp_regressor.predict(x_val)[0])
+            close_p = float(row["Close"].values[0])
+
+            atr_p = float(row["ATR_Pct"].values[0])
+            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+            sl_price = close_p * (1 + sl_pct / 100)
+            tp_price = close_p * (1 + tp_pct / 100)
+
+            st.subheader(
+                f"📊 {long_name} ({target_ticker}) - {target_date} 기준 리포트"
             )
 
-            st.markdown(
-                f"""
-                <div class="metric-container">
-                    <div class="metric-card">
-                        <div class="metric-title">모델 생존 확률</div>
-                        <div class="metric-value">{surv_prob:.1f}%</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-title">권장 손절가</div>
-                        <div class="metric-value">${sl_price:.2f} <span style="font-size:14px; color:#FF6B6B;">({sl_pct:.2f}%)</span></div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-title">예상 동적익절가</div>
-                        <div class="metric-value">${tp_price:.2f} <span style="font-size:14px; color:#4ECDC4;">(+{tp_pct
+            st.markdown(METRIC_CSS, unsafe_allow_html=True)
+
+            past_metric_html = (
+                '<div class="metric-container">'
+                '<div class="metric-card">'
+                '<div class="metric-title">해당일 종가 (진입가)</div>'
+                f'<div class="metric-value">${close_p:.2f}</div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">산출 손절가</div>'
+                f'<div class="metric-value">${sl_price:.2f} <span'
+                f' style="font-size:14px; color:#FF6B6B;">({sl_pct:.1f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">산출 익절가</div>'
+                f'<div class="metric-value">${tp_price:.2f} <span'
+                f' style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.1f}%)</span></div>'
+                "</div>"
+                '<div class="metric-card">'
+                '<div class="metric-title">모델 생존 확률</div>'
+                f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                "</div>"
+                "</div>"
+            )
+            st.markdown(past_metric_html, unsafe_allow_html=True)
+
+            sub_future = df_t.loc[target_date:].head(8)
+            st.line_chart(sub_future["Close"])
+          else:
+            st.warning(
+                "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
+            )
+        except Exception as e:
+          st.error(f"과거 데이터 조회 중 오류 발생: {e}")
+          st.code(traceback.format_exc(), language="python")
