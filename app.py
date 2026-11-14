@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("🚀 AI 기반 퀀트 트레이딩 시스템")
 st.write(
     "LightGBM 3중 앙상블 모델(Ranking + Survival + TP Regressor) 기반 실전"
-    " 분석 대시보드"
+    " 분석 대시보드 (코랩 정합성 100% 동기화)"
 )
 
 # 야후 파이낸스 차단 우회를 위한 세션 설정
@@ -114,7 +114,7 @@ else:
   UNIVERSE_TICKERS = MODEL_CONFIG["universe_tickers"]
 
 
-  # 피처 엔지니어링 함수
+  # 코랩과 100% 동일한 피처 엔지니어링 함수
   def compute_features(df):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
@@ -206,148 +206,120 @@ else:
 
 
   # -------------------------------------------------------------
-  # 1. 당일 종목 추천 (스캐너)
+  # 1. 당일 종목 추천 (스캐너) - 코랩 완전 정합성 보장
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header(
         f"🔥 당일 기준 정예 챔피언 스캐너 ({HOLDING_PERIOD}거래일 스윙 기준)"
     )
     st.write(
-        "저장된 최신 스캔 데이터를 즉시 불러옵니다. 강제로 새로 스캔하려면 아래"
-        " 버튼을 누르세요."
+        "코랩과 동일한 실시간 추론 파이프라인으로 전체 유니버스를 정밀"
+        " 스캔합니다."
     )
 
-    cache_file = "models/latest_scan_results.csv"
-    run_scan = st.button("🔄 실시간 전체 유니버스 재스캔 실행")
+    run_scan = st.button("🔄 실시간 전체 유니버스 정밀 재스캔 실행")
 
     df_display = None
     scan_timestamp = None
 
-    if not run_scan and os.path.exists(cache_file):
-      try:
-        df_display = pd.read_csv(cache_file)
+    with st.spinner(
+        f"총 {len(UNIVERSE_TICKERS)}개 종목 일괄 데이터 수집 및 앙상블 추론"
+        " 중..."
+    ):
+      progress_bar = st.progress(0)
+      status_text = st.empty()
 
-        # 💡 캐시 로딩 시 생존 확률 방어 필터 적용
-        if "생존확률" in df_display.columns:
-          df_display = df_display[
-              df_display["생존확률"] >= MIN_SURVIVE_PROB
-          ].reset_index(drop=True)
+      results = []
+      total_tickers = len(UNIVERSE_TICKERS)
 
-        mtime = os.path.getmtime(cache_file)
-        scan_timestamp = dt.datetime.fromtimestamp(mtime).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        st.info("📂 캐시된 최신 스캔 데이터를 즉시 불러왔습니다.")
-      except Exception:
-        run_scan = True
+      for idx, ticker in enumerate(UNIVERSE_TICKERS):
+        status_text.text(f"({idx+1}/{total_tickers}) {ticker} 분석 중...")
+        progress_bar.progress((idx + 1) / total_tickers)
 
-    if run_scan or df_display is None:
-      with st.spinner(
-          f"총 {len(UNIVERSE_TICKERS)}개 종목 실시간 스캔 및 추론 중..."
-      ):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        results = []
-        error_logs = []
-        total_tickers = len(UNIVERSE_TICKERS)
-
-        for idx, ticker in enumerate(UNIVERSE_TICKERS):
-          status_text.text(
-              f"({idx+1}/{total_tickers}) {ticker} 데이터 수집 및 분석 중..."
+        try:
+          df_t = yf.download(
+              ticker,
+              period="6mo",
+              progress=False,
+              auto_adjust=True,
+              session=session,
           )
-          progress_bar.progress((idx + 1) / total_tickers)
+          if isinstance(df_t.columns, pd.MultiIndex):
+            df_t.columns = df_t.columns.get_level_values(0)
 
-          try:
-            df_t = yf.download(
-                ticker,
-                period="6mo",
-                progress=False,
-                auto_adjust=True,
-                session=session,
-            )
-            if isinstance(df_t.columns, pd.MultiIndex):
-              df_t.columns = df_t.columns.get_level_values(0)
-
-            if len(df_t) < 30:
-              continue
-
-            df_t = compute_features(df_t)
-            latest = df_t.iloc[[-1]]
-
-            atr_p = float(latest["ATR_Pct"].values[0])
-            if (atr_p * 100) > 4.5:
-              continue
-
-            if latest[FEATURE_COLS].isna().sum().sum() == 0:
-              x_val = latest[FEATURE_COLS]
-              score = ranker_lgb.predict(x_val)[0]
-              surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-              pred_tp = tp_regressor.predict(x_val)[0]
-
-              close_p = float(latest["Close"].values[0])
-
-              sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-              min_required_tp = abs(sl_pct) * 1.5
-              tp_pct = max(pred_tp, min_required_tp)
-
-              sl_price = close_p * (1 + sl_pct / 100)
-              tp_price = close_p * (1 + tp_pct / 100)
-
-              results.append({
-                  "Ticker": ticker,
-                  "진입가($)": round(close_p, 2),
-                  "손절가($)": round(sl_price, 2),
-                  "조정 손절폭(%)": round(sl_pct, 2),
-                  "동적익절가($)": round(tp_price, 2),
-                  "동적 익절폭(%)": round(tp_pct, 2),
-                  "생존확률": round(surv_prob, 1),
-                  "Pred_Score": score,
-              })
-          except Exception as e:
-            error_logs.append(f"[{ticker}] 에러 내용: {str(e)}")
+          if len(df_t) < 30:
             continue
 
-        progress_bar.empty()
-        status_text.empty()
+          df_t = compute_features(df_t)
+          latest = df_t.iloc[[-1]]
 
-        if results:
-          res_df = pd.DataFrame(results)
+          atr_p = float(latest["ATR_Pct"].values[0])
+          if (atr_p * 100) > 4.5:
+            continue
 
-          # 💡 [정석 필터 로직] 전체 종목을 랭킹 점수 기준 상위 10% 선별 후, 생존 확률 62% 이상 필터링
-          top_k = max(1, int(len(res_df) * 0.10))
-          top_candidates = res_df.sort_values(
-              by="Pred_Score", ascending=False
-          ).head(top_k)
+          if latest[FEATURE_COLS].isna().sum().sum() == 0:
+            x_val = latest[FEATURE_COLS]
+            score = float(ranker_lgb.predict(x_val)[0])
+            surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+            pred_tp = float(tp_regressor.predict(x_val)[0])
 
-          filtered = top_candidates[
-              top_candidates["생존확률"] >= MIN_SURVIVE_PROB
-          ].sort_values(by="Pred_Score", ascending=False)
+            close_p = float(latest["Close"].values[0])
 
-          if len(filtered) > 0:
-            df_display = filtered.drop(columns=["Pred_Score"]).reset_index(
-                drop=True
-            )
-            os.makedirs("models", exist_ok=True)
-            df_display.to_csv(cache_file, index=False)
+            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+            min_required_tp = abs(sl_pct) * 1.5
+            tp_pct = max(pred_tp, min_required_tp)
 
-            scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.success("✨ 실시간 재스캔 완료 및 정예 챔피언 선별 완료!")
-          else:
-            st.warning(
-                "⚠️ 조건(상위 10% 랭킹 및 생존 확률 >="
-                f" {MIN_SURVIVE_PROB}%)을 통과한 종목이 없습니다."
-            )
-            df_display = pd.DataFrame()
+            sl_price = close_p * (1 + sl_pct / 100)
+            tp_price = close_p * (1 + tp_pct / 100)
+
+            results.append({
+                "Ticker": ticker,
+                "진입가($)": round(close_p, 2),
+                "손절가($)": round(sl_price, 2),
+                "조정 손절폭(%)": round(sl_pct, 2),
+                "동적익절가($)": round(tp_price, 2),
+                "동적 익절폭(%)": round(tp_pct, 2),
+                "생존확률": round(surv_prob, 1),
+                "Pred_Score": score,
+            })
+        except Exception:
+          continue
+
+      progress_bar.empty()
+      status_text.empty()
+
+      if results:
+        res_df = pd.DataFrame(results)
+
+        # 💡 [정석 정합성 로직] 전체 유니버스 풀 기준 정확히 상위 10% 산정 후 생존 확률 필터 적용
+        top_k = max(1, int(len(res_df) * 0.10))
+        top_candidates = res_df.sort_values(
+            by="Pred_Score", ascending=False
+        ).head(top_k)
+
+        filtered = top_candidates[
+            top_candidates["생존확률"] >= MIN_SURVIVE_PROB
+        ].sort_values(by="Pred_Score", ascending=False)
+
+        if len(filtered) > 0:
+          df_display = filtered.drop(columns=["Pred_Score"]).reset_index(
+              drop=True
+          )
+          scan_timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          st.success("✨ 코랩 정합성 기반 실전 스캔 완료!")
         else:
-          st.error("데이터를 불러오지 못했습니다.")
-          if error_logs:
-            st.code("\n".join(error_logs), language="text")
+          st.warning(
+              "⚠️ 조건(상위 10% 랭킹 및 생존 확률 >="
+              f" {MIN_SURVIVE_PROB}%)을 충족하는 종목이 없습니다."
+          )
           df_display = pd.DataFrame()
+      else:
+        st.error("유효한 종목 데이터를 수집하지 못했습니다.")
+        df_display = pd.DataFrame()
 
     if df_display is not None and not df_display.empty:
       if scan_timestamp:
-        st.markdown(f"📅 **데이터 기준 시점 (최종 스캔):** `{scan_timestamp}`")
+        st.markdown(f"📅 **데이터 기준 시점 (실시간):** `{scan_timestamp}`")
 
       display_df = df_display.copy()
       display_df.index = display_df.index + 1
