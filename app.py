@@ -60,7 +60,7 @@ ranker_lgb, classifier_lgb, tp_regressor, FEATURE_COLS, MODEL_CONFIG, load_error
     load_models_and_metadata()
 )
 
-# 사이드바 메뉴 구성 (코랩 셀 4, 5, 6 대응 기능 완비)
+# 사이드바 메뉴 구성
 menu = st.sidebar.selectbox(
     "메뉴 선택",
     [
@@ -275,7 +275,9 @@ else:
             if latest[FEATURE_COLS].isna().sum().sum() == 0:
               x_val = latest[FEATURE_COLS]
               score = ranker_lgb.predict(x_val)[0]
-              surv_prob = classifier_lgb.predict_proba(x_val)[0][1] * 100
+              surv_prob = (
+                  classifier_lgb.predict(x_val)[0] * 100
+              )  # Booster predict 사용
               pred_tp = tp_regressor.predict(x_val)[0]
 
               close_p = float(latest["Close"].values[0])
@@ -399,8 +401,8 @@ else:
 
             x_val = latest[FEATURE_COLS]
             surv_prob = float(
-                classifier_lgb.predict_proba(x_val)[0][1] * 100
-            )
+                classifier_lgb.predict(x_val)[0] * 100
+            )  # Booster predict 사용
             pred_tp = float(tp_regressor.predict(x_val)[0])
             close_p = float(latest["Close"].values[0])
             atr_p = float(latest["ATR_Pct"].values[0])
@@ -499,8 +501,8 @@ else:
 
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(
-                classifier_lgb.predict_proba(x_val)[0][1] * 100
-            )
+                classifier_lgb.predict(x_val)[0] * 100
+            )  # Booster predict 사용
             pred_tp = float(tp_regressor.predict(x_val)[0])
             close_p = float(row["Close"].values[0])
 
@@ -599,148 +601,4 @@ else:
                 "</div>"
                 '<div class="metric-card">'
                 f'<div class="metric-title">{HOLDING_PERIOD}일 최고가 / 익절달성</div>'
-                f'<div class="metric-value" style="font-size:17px;">${high_n:.2f}'
-                f' <br><span style="font-size:13px; color:#4ECDC4;">{tp_str}</span></div>'
-                "</div>"
-                '<div class="metric-card">'
-                f'<div class="metric-title">{HOLDING_PERIOD}일 만기 수익률</div>'
-                f'<div class="metric-value" style="color:{"#00FF7F" if ret_n >= 0 else "#FF6B6B"};">{ret_n:+.2f}%</div>'
-                "</div>"
-                "</div>"
-            )
-            st.markdown(card_html_2, unsafe_allow_html=True)
-
-            col1, col2 = st.columns(2)
-            with col1:
-              st.info(
-                  f"🛡️ **손절 터치 여부:** {sl_str} ({HOLDING_PERIOD}일 최저가:"
-                  f" ${low_n:.2f})"
-              )
-            with col2:
-              st.success(
-                  f"🎯 **목표 익절 도달:** {tp_str} (목표가: ${tp_price:.2f})"
-              )
-
-            st.subheader(f"📈 향후 {HOLDING_PERIOD}거래일 주가 경로 시각화")
-            st.line_chart(future_sub["Close"])
-
-          else:
-            st.warning(
-                "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
-            )
-        except Exception as e:
-          st.error(f"과거 데이터 조회 중 오류 발생: {e}")
-          st.code(traceback.format_exc(), language="python")
-
-  # -------------------------------------------------------------
-  # 4. 기존 보유 포지션 진단 및 매매 가이드 (코랩 셀 6 기능 대응)
-  # -------------------------------------------------------------
-  elif menu == "🛡️ 기존 보유 포지션 진단 및 매매 가이드":
-    st.header(
-        f"🛡️ 기존 보유 포지션 진단 및 매매 가이드 ({HOLDING_PERIOD}거래일 스윙"
-        " 기준)"
-    )
-    st.write(
-        "보유 중인 종목과 매수가를 입력하면 현재 시점의 모델 전망을 바탕으로"
-        " [홀딩 vs 매도]를 진단합니다."
-    )
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-      pos_ticker = st.text_input(
-          "보유 종목 티커", "AAPL", key="pos_ticker"
-      ).upper()
-    with col2:
-      pos_date = st.date_input(
-          "매수 날짜", datetime.now() - timedelta(days=15), key="pos_date"
-      )
-    with col3:
-      pos_price = st.number_input(
-          "매수가격 ($)", value=300.0, step=1.0, key="pos_price"
-      )
-
-    if st.button("포지션 진단 실행"):
-      with st.spinner(f"{pos_ticker} 실시간 분석 중..."):
-        try:
-          df_t = yf.download(
-              pos_ticker,
-              period="6mo",
-              progress=False,
-              auto_adjust=True,
-              session=session,
-          )
-          if isinstance(df_t.columns, pd.MultiIndex):
-            df_t.columns = df_t.columns.get_level_values(0)
-
-          if len(df_t) < 30:
-            st.error(f"'{pos_ticker}' 종목 데이터를 충분히 가져오지 못했습니다.")
-          else:
-            df_t = compute_features(df_t)
-            latest_row = df_t.iloc[[-1]]
-
-            curr_price = float(latest_row["Close"].values[0])
-            holding_return = (
-                (curr_price - pos_price) / pos_price * 100
-            )
-
-            x_val = latest_row[FEATURE_COLS]
-            score = float(ranker_lgb.predict(x_val)[0])
-            surv_prob = float(
-                classifier_lgb.predict_proba(x_val)[0][1] * 100
-            )
-            pred_tp = float(tp_regressor.predict(x_val)[0])
-            atr_val = float(latest_row["ATR_Pct"].values[0])
-
-            is_valid_atr = (atr_val * 100) <= 4.5
-            sl_pct = max(-(atr_val * 1.5 * 100), -8.0)
-            min_required_tp = abs(sl_pct) * 1.5
-            tp_pct = max(pred_tp, min_required_tp)
-
-            sl_price = curr_price * (1 + sl_pct / 100.0)
-            tp_price = curr_price * (1 + tp_pct / 100.0)
-            passed_survive = surv_prob >= MIN_SURVIVE_PROB
-
-            # 매매 전략 판정 (코랩 셀 6 로직 동일)
-            if not is_valid_atr:
-              action = (
-                  "SELL / REDUCE (변동성 위험 - 비중 축소 또는 매도 추천)"
-              )
-            elif surv_prob < 50.0:
-              action = "SELL / EXIT (하방 리스크 고조 - 즉시 매도 권장)"
-            elif holding_return <= sl_pct:
-              action = "STOP LOSS (손절가 이탈 - 즉시 손절 실행)"
-            elif holding_return >= tp_pct:
-              action = "TAKE PROFIT (목표 익절가 달성 - 수익 실현 권장)"
-            elif passed_survive:
-              action = "HOLD & RIDE (강력 홀딩 - 모멘텀 유지)"
-            else:
-              action = "WATCH / CAUTION (중립 관망)"
-
-            st.subheader(f"🛡️ [{pos_ticker}] 기존 보유 포지션 진단 리포트")
-            st.info(f"🎯 **[최종 의사결정 제안]: {action}**")
-
-            st.markdown(METRIC_CSS, unsafe_allow_html=True)
-            card_html_pos = (
-                '<div class="metric-container">'
-                '<div class="metric-card">'
-                '<div class="metric-title">매수가 / 현재가</div>'
-                f'<div class="metric-value">${pos_price:.2f} → ${curr_price:.2f}</div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">미실현 손익</div>'
-                f'<div class="metric-value" style="color:{"#00FF7F" if holding_return >= 0 else "#FF6B6B"};">{holding_return:+.2f}%</div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">손절 생존 확률</div>'
-                f'<div class="metric-value">{surv_prob:.1f}%</div>'
-                "</div>"
-                '<div class="metric-card">'
-                '<div class="metric-title">갱신된 추천 손절/익절</div>'
-                f'<div class="metric-value" style="font-size:15px;">SL: ${sl_price:.2f}<br>TP: ${tp_price:.2f}</div>'
-                "</div>"
-                "</div>"
-            )
-            st.markdown(card_html_pos, unsafe_allow_html=True)
-        except Exception as e:
-          st.error(f"포지션 진단 중 오류 발생: {e}")
-          st.code(traceback.format_exc(), language="python")
+                f'<div class="metric-
