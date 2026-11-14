@@ -278,6 +278,11 @@ else:
         lambda x: (x - x.mean()) / (x.std() + 1e-8)
     )
 
+    # 💡 [방어 코드] 모든 피처 컬럼을 강제 숫자형(float)으로 변환
+    for col in FEATURE_COLS:
+      if col in df_all.columns:
+        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
     df_clean = df_all.dropna(subset=FEATURE_COLS).reset_index(drop=True)
     return df_clean
 
@@ -307,7 +312,7 @@ else:
           latest_date = df_clean["Date"].max()
           scan_timestamp = pd.to_datetime(latest_date).strftime("%Y-%m-%d")
 
-          MAX_DAILY_ATR_PCT = 0.045  # ATR_Pct는 소수점 형태 (4.5% = 0.045)
+          MAX_DAILY_ATR_PCT = 0.045  # 4.5%
           latest_subset = df_clean[
               (df_clean["Date"] == latest_date)
               & (df_clean["ATR_Pct"] <= MAX_DAILY_ATR_PCT)
@@ -317,15 +322,14 @@ else:
               len(latest_subset) > 0
               and latest_subset[FEATURE_COLS].notna().all().all()
           ):
-            latest_subset["Pred_Score"] = ranker_lgb.predict(
-                latest_subset[FEATURE_COLS]
+            # 💡 타입 안전성 확보를 위한 숫자형 변환 적용
+            x_matrix = latest_subset[FEATURE_COLS].apply(
+                pd.to_numeric, errors="coerce"
             )
-            latest_subset["Survive_Prob"] = classifier_lgb.predict(
-                latest_subset[FEATURE_COLS]
-            )
-            latest_subset["Predicted_TP"] = tp_regressor.predict(
-                latest_subset[FEATURE_COLS]
-            )
+
+            latest_subset["Pred_Score"] = ranker_lgb.predict(x_matrix)
+            latest_subset["Survive_Prob"] = classifier_lgb.predict(x_matrix)
+            latest_subset["Predicted_TP"] = tp_regressor.predict(x_matrix)
 
             group_sorted = latest_subset.sort_values(
                 by="Pred_Score", ascending=False
@@ -421,7 +425,7 @@ else:
             )
           else:
             latest = t_df.iloc[[-1]]
-            x_val = latest[FEATURE_COLS]
+            x_val = latest[FEATURE_COLS].apply(pd.to_numeric, errors="coerce")
 
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
             pred_tp = float(tp_regressor.predict(x_val)[0])
@@ -498,7 +502,7 @@ else:
 
           if not match_row.empty:
             row = match_row.iloc[0]
-            x_val = row[FEATURE_COLS].to_frame().T
+            x_val = row[FEATURE_COLS].to_frame().T.apply(pd.to_numeric, errors="coerce")
 
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
@@ -642,7 +646,7 @@ else:
                 (curr_price - pos_price) / pos_price * 100
             )
 
-            x_val = latest_row[FEATURE_COLS]
+            x_val = latest_row[FEATURE_COLS].apply(pd.to_numeric, errors="coerce")
             score = float(ranker_lgb.predict(x_val)[0])
             surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
             pred_tp = float(tp_regressor.predict(x_val)[0])
