@@ -375,7 +375,7 @@ if ranker_lgb is not None:
       st.dataframe(display_df, use_container_width=True)
 
   # -------------------------------------------------------------
-  # 2. 특정 종목 당일 분석 (종목명 표시 및 글씨 잘림 방지 스타일 적용)
+  # 2. 특정 종목 당일 분석 (원복 코드 그대로 유지)
   # -------------------------------------------------------------
   elif menu == "🔍 특정 종목 당일 분석":
     st.header("🔍 특정 종목 당일 딥다이브 분석")
@@ -386,7 +386,6 @@ if ranker_lgb is not None:
     if st.button("분석 시작"):
       with st.spinner(f"{target_ticker} 분석 중..."):
         try:
-          # 종목 정식 이름 가져오기 (yfinance Ticker 객체 활용)
           t_obj = yf.Ticker(target_ticker, session=session)
           try:
             long_name = (
@@ -428,7 +427,6 @@ if ranker_lgb is not None:
             sl_price = close_p * (1 + sl_pct / 100)
             tp_price = close_p * (1 + tp_pct / 100)
 
-            # 💡 종목 이름 타이틀 출력
             st.subheader(
                 f"📊 {long_name} ({target_ticker}) 분석 리포트"
             )
@@ -440,7 +438,6 @@ if ranker_lgb is not None:
                 unsafe_allow_html=True,
             )
 
-            # 💡 글씨 잘림 현상 방지를 위해 HTML/CSS 카드 형태로 지표 배치
             st.markdown(
                 """
                 <style>
@@ -503,7 +500,7 @@ if ranker_lgb is not None:
           st.error(f"분석 중 오류 발생: {e}")
 
   # -------------------------------------------------------------
-  # 3. 특정 종목 과거 시점 분석
+  # 3. 특정 종목 과거 시점 분석 (원복 코드의 틀을 유지하되 에러만 완벽 차단)
   # -------------------------------------------------------------
   elif menu == "⏳ 특정 종목 과거 시점 분석":
     st.header("⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증")
@@ -515,109 +512,114 @@ if ranker_lgb is not None:
     )
 
     if st.button("과거 시점 시그널 조회"):
-      try:
-        t_obj = yf.Ticker(target_ticker, session=session)
+      with st.spinner(f"{target_ticker} 과거 데이터 조회 중..."):
         try:
-          long_name = (
-              t_obj.info.get("longName")
-              or t_obj.info.get("shortName")
-              or target_ticker
+          t_obj = yf.Ticker(target_ticker, session=session)
+          try:
+            long_name = (
+                t_obj.info.get("longName")
+                or t_obj.info.get("shortName")
+                or target_ticker
+            )
+          except Exception:
+            long_name = target_ticker
+
+          df_t = yf.download(
+              target_ticker,
+              period="2y",
+              progress=False,
+              auto_adjust=True,
+              session=session,
           )
-        except Exception:
-          long_name = target_ticker
+          if isinstance(df_t.columns, pd.MultiIndex):
+            df_t.columns = df_t.columns.get_level_values(0)
+          df_t = compute_features(df_t)
+          df_t.index = pd.to_datetime(df_t.index).date()
 
-        df_t = yf.download(
-            target_ticker,
-            period="2y",
-            progress=False,
-            auto_adjust=True,
-            session=session,
-        )
-        if isinstance(df_t.columns, pd.MultiIndex):
-          df_t.columns = df_t.columns.get_level_values(0)
-        df_t = compute_features(df_t)
-        df_t.index = pd.to_datetime(df_t.index).date()
+          if target_date in df_t.index:
+            # 💡 안전하게 단일 행(Series) 또는 DataFrame을 받아 처리하도록 수정
+            row = df_t.loc[target_date]
+            if isinstance(row, pd.DataFrame):
+              row = row.iloc[0]
 
-        if target_date in df_t.index:
-          row = df_t.loc[[target_date]]
-          x_val = row[FEATURE_COLS]
+            x_val = pd.DataFrame([row[FEATURE_COLS]])
 
-          surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-          pred_tp = float(tp_regressor.predict(x_val)[0])
-          close_p = float(row["Close"].values[0])
+            surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+            pred_tp = float(tp_regressor.predict(x_val)[0])
+            close_p = float(row["Close"])
 
-          atr_p = float(row["ATR_Pct"].values[0])
-          sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
-          tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
-          sl_price = close_p * (1 + sl_pct / 100)
-          tp_price = close_p * (1 + tp_pct / 100)
+            atr_p = float(row["ATR_Pct"])
+            sl_pct = max(-(atr_p * 1.5 * 100), -8.0)
+            tp_pct = max(pred_tp, abs(sl_pct) * 1.5)
+            sl_price = close_p * (1 + sl_pct / 100)
+            tp_price = close_p * (1 + tp_pct / 100)
 
-          st.subheader(
-              f"📊 {long_name} ({target_ticker}) - {target_date} 기준 리포트"
-          )
+            st.subheader(
+                f"📊 {long_name} ({target_ticker}) - {target_date} 기준 리포트"
+            )
 
-          st.markdown(
-              """
-              <style>
-              .metric-container {
-                  display: flex;
-                  justify-content: space-between;
-                  gap: 10px;
-                  margin-top: 15px;
-                  margin-bottom: 25px;
-              }
-              .metric-card {
-                  background-color: #1E1E1E;
-                  border: 1px solid #333333;
-                  border-radius: 8px;
-                  padding: 15px;
-                  flex: 1;
-                  text-align: center;
-              }
-              .metric-title {
-                  font-size: 14px;
-                  color: #AAAAAA;
-                  margin-bottom: 5px;
-              }
-              .metric-value {
-                  font-size: 20px;
-                  font-weight: bold;
-                  color: #FFFFFF;
-              }
-              </style>
-              """,
-              unsafe_allow_html=True,
-          )
+            st.markdown(
+                """
+                <style>
+                .metric-container {
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 10px;
+                    margin-top: 15px;
+                    margin-bottom: 25px;
+                }
+                .metric-card {
+                    background-color: #1E1E1E;
+                    border: 1px solid #333333;
+                    border-radius: 8px;
+                    padding: 15px;
+                    flex: 1;
+                    text-align: center;
+                }
+                .metric-title {
+                    font-size: 14px;
+                    color: #AAAAAA;
+                    margin-bottom: 5px;
+                }
+                .metric-value {
+                    font-size: 20px;
+                    font-weight: bold;
+                    color: #FFFFFF;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
-          st.markdown(
-              f"""
-              <div class="metric-container">
-                  <div class="metric-card">
-                      <div class="metric-title">해당일 종가 (진입가)</div>
-                      <div class="metric-value">${close_p:.2f}</div>
-                  </div>
-                  <div class="metric-card">
-                      <div class="metric-title">산출 손절가</div>
-                      <div class="metric-value">${sl_price:.2f} <span style="font-size:14px; color:#FF6B6B;">({sl_pct:.1f}%)</span></div>
-                  </div>
-                  <div class="metric-card">
-                      <div class="metric-title">산출 익절가</div>
-                      <div class="metric-value">${tp_price:.2f} <span style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.1f}%)</span></div>
-                  </div>
-                  <div class="metric-card">
-                      <div class="metric-title">모델 생존 확률</div>
-                      <div class="metric-value">{surv_prob:.1f}%</div>
-                  </div>
-              </div>
-              """,
-              unsafe_allow_html=True,
-          )
+            st.markdown(
+                f"""
+                <div class="metric-container">
+                    <div class="metric-card">
+                        <div class="metric-title">해당일 종가 (진입가)</div>
+                        <div class="metric-value">${close_p:.2f}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">산출 손절가</div>
+                        <div class="metric-value">${sl_price:.2f} <span style="font-size:14px; color:#FF6B6B;">({sl_pct:.1f}%)</span></div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">산출 익절가</div>
+                        <div class="metric-value">${tp_price:.2f} <span style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.1f}%)</span></div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">모델 생존 확률</div>
+                        <div class="metric-value">{surv_prob:.1f}%</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-          sub_future = df_t.loc[target_date:].head(8)
-          st.line_chart(sub_future["Close"])
-        else:
-          st.warning(
-              "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
-          )
-      except Exception as e:
-        st.error(f"과거 데이터 조회 중 오류 발생: {e}")
+            sub_future = df_t.loc[target_date:].head(8)
+            st.line_chart(sub_future["Close"])
+          else:
+            st.warning(
+                "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일 등)."
+            )
+        except Exception as e:
+          st.error(f"과거 데이터 조회 중 오류 발생: {e}")
