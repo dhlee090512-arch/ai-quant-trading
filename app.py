@@ -657,3 +657,643 @@ else:
         g[col] = pd.to_numeric(g[col], errors="coerce")
 
     g = g.dropna(subset=FEATURE_COLS).reset_index(drop=True)
+    return g, raw_norm, False
+
+
+  # -------------------------------------------------------------
+  # 1. 당일 종목 추천 (스캐너)
+  # -------------------------------------------------------------
+  if menu == "🔥 당일 종목 추천 (스캐너)":
+    st.header(
+        f"🔥 당일 기준 정예 챔피언 스캐너 ({HOLDING_PERIOD}거래일 스윙 기준)"
+    )
+    st.write(
+        "코랩 셀 1·2의 전처리 파이프라인과 100% 동일한 데이터 및 피처 기준으로"
+        " 스캔합니다."
+    )
+
+    df_display = None
+    scan_timestamp = None
+    run_time_kst = now_kst_str()
+
+    with st.spinner(
+        "코랩 전처리 파이프라인 가동 중 (전체 벌크 다운로드 및 팩터 연산)..."
+    ):
+      try:
+        df_clean = fetch_and_process_universe_data()
+
+        if not df_clean.empty:
+          latest_date = df_clean["Date"].max()
+          scan_timestamp = f"{pd.to_datetime(latest_date).strftime('%Y-%m-%d')} (조회 시각: {run_time_kst})"
+
+          MAX_DAILY_ATR_PCT = 0.045
+          latest_subset = df_clean[
+              (df_clean["Date"] == latest_date)
+              & (df_clean["ATR_Pct"] <= MAX_DAILY_ATR_PCT)
+          ].copy()
+
+          if (
+              len(latest_subset) > 0
+              and latest_subset[FEATURE_COLS].notna().all().all()
+          ):
+            x_matrix = latest_subset[FEATURE_COLS].apply(
+                pd.to_numeric, errors="coerce"
+            )
+
+            latest_subset["Pred_Score"] = ranker_lgb.predict(x_matrix)
+            latest_subset["Survive_Prob"] = classifier_lgb.predict(x_matrix)
+            latest_subset["Predicted_TP"] = tp_regressor.predict(x_matrix)
+
+            group_sorted = latest_subset.sort_values(
+                by="Pred_Score", ascending=False
+            )
+            top_k = max(1, int(len(group_sorted) * 0.10))
+            top_candidates = group_sorted.head(top_k)
+
+            MIN_SURVIVE_PROB_COLAB = 0.58
+            filtered_latest = top_candidates[
+                top_candidates["Survive_Prob"] >= MIN_SURVIVE_PROB_COLAB
+            ].reset_index(drop=True)
+
+            if len(filtered_latest) > 0:
+              MAX_SL_LIMIT = -8.0
+              display_results = []
+
+              for idx, row in filtered_latest.iterrows():
+                rank_num = idx + 1
+                entry_price = float(row["Close"])
+                atr_val = float(row["ATR_Pct"]) * 100
+
+                sl_pct = max(-(atr_val * 1.5), MAX_SL_LIMIT)
+                model_pred_tp = float(row["Predicted_TP"])
+                min_required_tp = abs(sl_pct) * 1.5
+                tp_pct = max(model_pred_tp, min_required_tp)
+
+                sl_price = entry_price * (1 + sl_pct / 100.0)
+                tp_price = entry_price * (1 + tp_pct / 100.0)
+                surv_prob_val = float(row["Survive_Prob"] * 100)
+
+                display_results.append({
+                    "순위": rank_num,
+                    "Ticker": row["Ticker"],
+                    "진입가($)": round(entry_price, 2),
+                    "손절가($)": round(sl_price, 2),
+                    "조정 손절폭(%)": f"{sl_pct:.2f} %",
+                    "동적익절가($)": round(tp_price, 2),
+                    "동적 익절폭(%)": f"+{tp_pct:.2f} %",
+                    "생존확률": f"{surv_prob_val:.1f} %",
+                })
+
+              df_display = pd.DataFrame(display_results)
+              st.success(
+                  "✨ 코랩 전처리 로직과 완벽히 일치하는 정예 챔피언 선별"
+                  " 완료!"
+              )
+            else:
+              st.warning(
+                  "⚠️ 조건(상위 10% 랭킹, 생존율 58% 이상)을 통과한 종목이"
+                  " 없습니다."
+              )
+              df_display = pd.DataFrame()
+          else:
+            st.warning(
+                "⚠️ 최신 마감일에 조건을 충족하는 유효한 데이터가 없습니다."
+            )
+            df_display = pd.DataFrame()
+        else:
+          st.error("데이터 전처리 결과가 비어 있습니다.")
+          df_display = pd.DataFrame()
+      except Exception as e:
+        st.error(f"스캔 중 오류 발생: {e}")
+        st.code(traceback.format_exc(), language="python")
+        df_display = pd.DataFrame()
+
+    if df_display is not None and not df_display.empty:
+      if scan_timestamp:
+        st.markdown(f"📅 **타겟 기준일 (최신 마감일):** `{scan_timestamp}`")
+
+      st.markdown(METRIC_CSS, unsafe_allow_html=True)
+
+      cards_per_row = 2
+      num_picks = len(df_display)
+      for start_idx in range(0, num_picks, cards_per_row):
+        cols = st.columns(cards_per_row)
+        for offset in range(cards_per_row):
+          row_idx = start_idx + offset
+          if row_idx >= num_picks:
+            continue
+          r = df_display.iloc[row_idx]
+          with cols[offset]:
+            box_html = (
+                '<div class="pick-box">'
+                '<div class="pick-header">'
+                f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]}</div>'
+                f'<div class="pick-surv">생존확률 {r["생존확률"]}</div>'
+                "</div>"
+                '<div class="pick-grid">'
+                '<div class="pick-item">'
+                '<div class="pick-item-label">진입가($)</div>'
+                f'<div class="pick-item-val">${r["진입가($)"]:.2f}</div>'
+                "</div>"
+                '<div class="pick-item">'
+                '<div class="pick-item-label">손절가 / 조정 손절폭</div>'
+                f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["조정 손절폭(%)"].strip()})</span></div>'
+                "</div>"
+                '<div class="pick-item">'
+                '<div class="pick-item-label">동적익절가 / 동적 익절폭</div>'
+                f'<div class="pick-item-val">${r["동적익절가($)"]:.2f}<span class="pick-tp">({r["동적 익절폭(%)"].strip()})</span></div>'
+                "</div>"
+                "</div>"
+                "</div>"
+            )
+            st.markdown(box_html, unsafe_allow_html=True)
+
+      st.markdown("#### 📋 전체 추천 종목 요약 표")
+      st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+  # -------------------------------------------------------------
+  # 2. 특정 종목 당일 분석
+  # -------------------------------------------------------------
+  elif menu == "🔍 특정 종목 당일 분석":
+    st.header(f"🔍 특정 종목 당일 딥다이브 분석 ({HOLDING_PERIOD}거래일 기준)")
+    target_ticker_raw = st.text_input(
+        "분석할 티커 입력 (대소문자 무관, 유니버스 외 종목도 지원)", "TSM"
+    )
+    target_ticker = target_ticker_raw.strip().upper()
+
+    if st.button("분석 시작"):
+      if not target_ticker:
+        st.warning("티커를 입력해주세요.")
+      else:
+        with st.spinner(f"{target_ticker} 분석 중..."):
+          try:
+            t_df, raw_norm_df, in_universe = fetch_single_ticker_with_market(
+                target_ticker
+            )
+
+            if t_df.empty or len(t_df) < 30:
+              st.error(
+                  f"'{target_ticker}'에 대한 충분한 데이터가 없습니다. 티커"
+                  " 오타를 확인해주세요."
+              )
+            else:
+              source_label = (
+                  "유니버스 동기화 데이터"
+                  if in_universe
+                  else "yfinance 개별 다운로드 + VIX/SPY 결합 데이터"
+              )
+              latest = t_df.iloc[[-1]]
+              x_val = latest[FEATURE_COLS].apply(
+                  pd.to_numeric, errors="coerce"
+              )
+
+              surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+              pred_tp = float(tp_regressor.predict(x_val)[0])
+              close_p = float(latest["Close"].values[0])
+              atr_val = float(latest["ATR_Pct"].values[0]) * 100
+
+              sl_pct = max(-(atr_val * 1.5), -8.0)
+              min_required_tp = abs(sl_pct) * 1.5
+              tp_pct = max(pred_tp, min_required_tp)
+
+              sl_price = close_p * (1 + sl_pct / 100.0)
+              tp_price = close_p * (1 + tp_pct / 100.0)
+
+              latest_bar_ts = pd.Timestamp(latest["Date"].values[0])
+              latest_bar_date = latest_bar_ts.strftime("%Y-%m-%d")
+              proj_expiry_ts = latest_bar_ts + pd.Timedelta(
+                  days=int(HOLDING_PERIOD * 1.45)
+              )
+
+              st.subheader(f"📊 {target_ticker} 분석 리포트")
+              st.caption(
+                  f"데이터 기준일: {latest_bar_date} | 분석 시각:"
+                  f" {now_kst_str()} | 소스: {source_label}"
+              )
+              st.markdown(
+                  f"**현재 종가 (진입가):** <span"
+                  f' style="font-size: 28px; font-weight: bold; color:'
+                  f' #00FF7F;">${close_p:.2f}</span>',
+                  unsafe_allow_html=True,
+              )
+
+              st.markdown(METRIC_CSS, unsafe_allow_html=True)
+              metric_html = (
+                  '<div class="metric-container">'
+                  '<div class="metric-card">'
+                  '<div class="metric-title">모델 생존 확률</div>'
+                  f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">권장 손절가</div>'
+                  f'<div class="metric-value">${sl_price:.2f} <span'
+                  f' style="font-size:14px; color:#FF6B6B;">({sl_pct:.2f}%)</span></div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">예상 동적익절가</div>'
+                  f'<div class="metric-value">${tp_price:.2f} <span'
+                  f' style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.2f}%)</span></div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">예상 목표익절폭</div>'
+                  f'<div class="metric-value" style="color: #4ECDC4;">+{pred_tp:.2f}%</div>'
+                  "</div>"
+                  "</div>"
+              )
+              st.markdown(metric_html, unsafe_allow_html=True)
+
+              chart_src = (
+                  raw_norm_df
+                  if raw_norm_df is not None and not raw_norm_df.empty
+                  else t_df
+              )
+              chart_window = chart_src.tail(35).copy()
+              render_fixed_candlestick(
+                  ohlc_df=chart_window,
+                  title=(
+                      f"{target_ticker} 캔들차트 (기준/진입 시점 및 손절·익절"
+                      " 구간)"
+                  ),
+                  sl_price=sl_price,
+                  tp_price=tp_price,
+                  entry_price=close_p,
+                  buy_ts=latest_bar_ts,
+                  expiry_ts=proj_expiry_ts,
+              )
+          except Exception as e:
+            st.error(f"분석 중 오류 발생: {e}")
+            st.code(traceback.format_exc(), language="python")
+
+  # -------------------------------------------------------------
+  # 3. 특정 종목 과거 시점 분석
+  # -------------------------------------------------------------
+  elif menu == "⏳ 특정 종목 과거 시점 분석":
+    st.header(
+        f"⏳ 특정 종목 과거 특정 날짜 기준 시그널 검증 ({HOLDING_PERIOD}거래일"
+        " 사후 검증)"
+    )
+    target_ticker_raw = st.text_input(
+        "분석할 티커 입력 (대소문자 무관, 유니버스 외 종목도 지원)",
+        "TSM",
+        key="past_ticker",
+    )
+    target_ticker = target_ticker_raw.strip().upper()
+    default_past_date = (datetime.now(KST) - timedelta(days=30)).date()
+    target_date = st.date_input("조회할 과거 날짜 선택", default_past_date)
+
+    if st.button("과거 시점 시그널 검증 실행"):
+      if not target_ticker:
+        st.warning("티커를 입력해주세요.")
+      else:
+        with st.spinner(f"{target_ticker} 과거 데이터 조회 및 사후 검증 중..."):
+          try:
+            df_t, full_t_df, in_universe = fetch_single_ticker_with_market(
+                target_ticker
+            )
+
+            if df_t.empty:
+              st.error(
+                  f"'{target_ticker}'에 대한 충분한 데이터를 가져오지"
+                  " 못했습니다."
+              )
+            else:
+              source_label = (
+                  "유니버스 동기화 데이터"
+                  if in_universe
+                  else "yfinance 개별 다운로드 + VIX/SPY 결합 데이터"
+              )
+              df_t = df_t.copy()
+              df_t["DateOnly"] = pd.to_datetime(df_t["Date"]).dt.date
+              match_row = df_t[df_t["DateOnly"] == target_date]
+
+              if not match_row.empty:
+                row = match_row.iloc[0]
+                x_val = (
+                    row[FEATURE_COLS]
+                    .to_frame()
+                    .T.apply(pd.to_numeric, errors="coerce")
+                )
+
+                score = float(ranker_lgb.predict(x_val)[0])
+                surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+                pred_tp = float(tp_regressor.predict(x_val)[0])
+                close_p = float(row["Close"])
+
+                atr_val = float(row["ATR_Pct"]) * 100
+                atr_limit_passed = atr_val <= 4.5
+
+                sl_pct = max(-(atr_val * 1.5), -8.0)
+                min_required_tp = abs(sl_pct) * 1.5
+                tp_pct = max(pred_tp, min_required_tp)
+
+                sl_price = close_p * (1 + sl_pct / 100.0)
+                tp_price = close_p * (1 + tp_pct / 100.0)
+
+                surv_passed = surv_prob >= 58.0
+                is_champion = surv_passed and atr_limit_passed
+
+                if full_t_df is None or full_t_df.empty:
+                  full_t_df = df_t.copy()
+                else:
+                  full_t_df = full_t_df.copy()
+
+                full_t_df["Date"] = pd.to_datetime(full_t_df["Date"])
+                full_t_df["DateOnly"] = full_t_df["Date"].dt.date
+
+                future_sub = full_t_df[
+                    full_t_df["DateOnly"] >= target_date
+                ].head(HOLDING_PERIOD + 1)
+
+                buy_ts = pd.Timestamp(target_date)
+                expiry_ts = None
+
+                if len(future_sub) > 1:
+                  valid_period = future_sub.iloc[1:]
+                  expiry_ts = pd.Timestamp(valid_period["Date"].iloc[-1])
+
+                  def get_scalar(val):
+                    if isinstance(val, pd.Series):
+                      return float(val.iloc[0])
+                    return float(val)
+
+                  high_n = get_scalar(valid_period["High"].max())
+                  low_n = get_scalar(valid_period["Low"].min())
+                  close_n = get_scalar(valid_period["Close"].iloc[-1])
+                  ret_n = (close_n - close_p) / close_p * 100
+
+                  tp_reached = high_n >= tp_price
+                  sl_touched = low_n <= sl_price
+
+                  tp_str = (
+                      f"성공 🎯 ({high_n:.2f} 도달)" if tp_reached else "미달 ❌"
+                  )
+                  sl_str = (
+                      f"위험 ⚠️ (터치 발생)"
+                      if sl_touched
+                      else "안전 ✅ (터치 없음)"
+                  )
+                else:
+                  high_n, low_n, close_n, ret_n = (
+                      close_p,
+                      close_p,
+                      close_p,
+                      0.0,
+                  )
+                  tp_str, sl_str = "데이터 부족", "데이터 부족"
+
+                st.subheader(
+                    f"📊 {target_ticker} - {target_date} 기준"
+                    f" {HOLDING_PERIOD}일 검증 리포트"
+                )
+                st.caption(
+                    f"검증 실행 시각: {now_kst_str()} | 소스: {source_label}"
+                )
+
+                if is_champion:
+                  st.success(
+                      f"✨ **[{target_ticker}] 매수 진입 적격 챔피언 시그널"
+                      " 발생!** (손절 생존 확률 >= 58% 및 변동성 기준 충족)"
+                  )
+                else:
+                  st.warning(f"⚠️ **[{target_ticker}] 조건 미달 (관망 권장)**")
+
+                st.markdown(METRIC_CSS, unsafe_allow_html=True)
+                card_html_1 = (
+                    '<div class="metric-container">'
+                    '<div class="metric-card">'
+                    '<div class="metric-title">진입가 (기준 종가)</div>'
+                    f'<div class="metric-value">${close_p:.2f}</div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    '<div class="metric-title">모델 랭킹 점수</div>'
+                    f'<div class="metric-value">{score:.4f}</div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    '<div class="metric-title">손절 생존 확률</div>'
+                    f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    '<div class="metric-title">일일 ATR 변동성</div>'
+                    f'<div class="metric-value">{atr_val:.2f}%</div>'
+                    "</div>"
+                    "</div>"
+                )
+                st.markdown(card_html_1, unsafe_allow_html=True)
+
+                ret_n_color = "#00FF7F" if ret_n >= 0 else "#FF6B6B"
+                card_html_2 = (
+                    '<div class="metric-container">'
+                    '<div class="metric-card">'
+                    '<div class="metric-title">산출 손절가</div>'
+                    f'<div class="metric-value" style="color:#FF6B6B;">${sl_price:.2f}'
+                    f' <span style="font-size:14px;">({sl_pct:.2f}%)</span></div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    '<div class="metric-title">산출 익절가</div>'
+                    f'<div class="metric-value" style="color:#4ECDC4;">${tp_price:.2f}'
+                    f' <span style="font-size:14px;">(+{tp_pct:.2f}%)</span></div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    f'<div class="metric-title">{HOLDING_PERIOD}일 최고가 / 익절달성</div>'
+                    f'<div class="metric-value" style="font-size:17px;">${high_n:.2f}'
+                    f' <br><span style="font-size:13px; color:#4ECDC4;">{tp_str}</span></div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    f'<div class="metric-title">{HOLDING_PERIOD}일 만기 수익률</div>'
+                    f'<div class="metric-value" style="color:{ret_n_color};">{ret_n:+.2f}%</div>'
+                    "</div>"
+                    "</div>"
+                )
+                st.markdown(card_html_2, unsafe_allow_html=True)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                  st.info(
+                      f"🛡️ **손절 터치 여부:** {sl_str} ({HOLDING_PERIOD}일"
+                      f" 최저가: ${low_n:.2f})"
+                  )
+                with col2:
+                  st.success(
+                      f"🎯 **목표 익절 도달:** {tp_str} (목표가:"
+                      f" ${tp_price:.2f})"
+                  )
+
+                st.subheader(
+                    f"📈 매수 시점 ~ {HOLDING_PERIOD}거래일 보유 만기 캔들차트"
+                )
+                # 매수 전 10일 버퍼 + 보유 기간 이후 5일 버퍼를 합쳐 시각화
+                pre_sub = full_t_df[
+                    full_t_df["DateOnly"] < target_date
+                ].tail(10)
+                post_buffer = full_t_df[
+                    full_t_df["DateOnly"]
+                    > (
+                        expiry_ts.date()
+                        if expiry_ts is not None
+                        else target_date
+                    )
+                ].head(5)
+                chart_df = pd.concat(
+                    [pre_sub, future_sub, post_buffer], ignore_index=True
+                ).drop_duplicates(subset=["Date"])
+
+                render_fixed_candlestick(
+                    ohlc_df=chart_df,
+                    title=(
+                        f"{target_ticker} ({target_date} 기준 {HOLDING_PERIOD}일"
+                        " 시그널 검증 캔들차트)"
+                    ),
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    entry_price=close_p,
+                    buy_ts=buy_ts,
+                    expiry_ts=expiry_ts,
+                )
+
+              else:
+                st.warning(
+                    "선택한 날짜에 해당하는 거래 데이터가 없습니다 (휴장일"
+                    " 등)."
+                )
+          except Exception as e:
+            st.error(f"과거 데이터 조회 중 오류 발생: {e}")
+            st.code(traceback.format_exc(), language="python")
+
+  # -------------------------------------------------------------
+  # 4. 기존 보유 포지션 진단 및 매매 가이드
+  # -------------------------------------------------------------
+  elif menu == "🛡️ 기존 보유 포지션 진단 및 매매 가이드":
+    st.header(
+        f"🛡️ 기존 보유 포지션 진단 및 매매 가이드 ({HOLDING_PERIOD}거래일 스윙"
+        " 기준)"
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+      pos_ticker_raw = st.text_input(
+          "보유 종목 티커 (대소문자 무관)", "AAPL", key="pos_ticker"
+      )
+      pos_ticker = pos_ticker_raw.strip().upper()
+    with col2:
+      default_pos_date = (datetime.now(KST) - timedelta(days=15)).date()
+      pos_date = st.date_input(
+          "매수 날짜", default_pos_date, key="pos_date"
+      )
+    with col3:
+      pos_price = st.number_input(
+          "매수가격 ($)", value=300.0, step=1.0, key="pos_price"
+      )
+
+    if st.button("포지션 진단 실행"):
+      if not pos_ticker:
+        st.warning("티커를 입력해주세요.")
+      else:
+        with st.spinner(f"{pos_ticker} 실시간 분석 중..."):
+          try:
+            t_df, raw_norm_df, in_universe = fetch_single_ticker_with_market(
+                pos_ticker
+            )
+
+            if t_df.empty or len(t_df) < 30:
+              st.error(
+                  f"'{pos_ticker}' 종목 데이터를 충분히 가져오지 못했습니다."
+              )
+            else:
+              source_label = (
+                  "유니버스 동기화 데이터"
+                  if in_universe
+                  else "yfinance 개별 다운로드 + VIX/SPY 결합 데이터"
+              )
+              latest_row = t_df.iloc[[-1]]
+              curr_price = float(latest_row["Close"].values[0])
+              holding_return = (curr_price - pos_price) / pos_price * 100
+
+              x_val = latest_row[FEATURE_COLS].apply(
+                  pd.to_numeric, errors="coerce"
+              )
+              score = float(ranker_lgb.predict(x_val)[0])
+              surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
+              pred_tp = float(tp_regressor.predict(x_val)[0])
+              atr_val = float(latest_row["ATR_Pct"].values[0]) * 100
+
+              is_valid_atr = atr_val <= 4.5
+              sl_pct = max(-(atr_val * 1.5), -8.0)
+              min_required_tp = abs(sl_pct) * 1.5
+              tp_pct = max(pred_tp, min_required_tp)
+
+              sl_price = curr_price * (1 + sl_pct / 100.0)
+              tp_price = curr_price * (1 + tp_pct / 100.0)
+              passed_survive = surv_prob >= 58.0
+
+              if not is_valid_atr:
+                action = (
+                    "SELL / REDUCE (변동성 위험 - 비중 축소 또는 매도 추천)"
+                )
+              elif surv_prob < 50.0:
+                action = "SELL / EXIT (하방 리스크 고조 - 즉시 매도 권장)"
+              elif holding_return <= sl_pct:
+                action = "STOP LOSS (손절가 이탈 - 즉시 손절 실행)"
+              elif holding_return >= tp_pct:
+                action = "TAKE PROFIT (목표 익절가 달성 - 수익 실현 권장)"
+              elif passed_survive:
+                action = "HOLD & RIDE (강력 홀딩 - 모멘텀 유지)"
+              else:
+                action = "WATCH / CAUTION (중립 관망)"
+
+              st.subheader(f"🛡️ [{pos_ticker}] 기존 보유 포지션 진단 리포트")
+              st.caption(
+                  f"진단 시각: {now_kst_str()} | 매수일: {pos_date} | 소스:"
+                  f" {source_label}"
+              )
+              st.info(f"🎯 **[최종 의사결정 제안]: {action}**")
+
+              holding_ret_color = (
+                  "#00FF7F" if holding_return >= 0 else "#FF6B6B"
+              )
+              st.markdown(METRIC_CSS, unsafe_allow_html=True)
+              card_html_pos = (
+                  '<div class="metric-container">'
+                  '<div class="metric-card">'
+                  '<div class="metric-title">매수가 / 현재가</div>'
+                  f'<div class="metric-value">${pos_price:.2f} → ${curr_price:.2f}</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">미실현 손익</div>'
+                  f'<div class="metric-value" style="color:{holding_ret_color};">{holding_return:+.2f}%</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">손절 생존 확률</div>'
+                  f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">갱신된 추천 손절/익절</div>'
+                  f'<div class="metric-value" style="font-size:15px;">SL: ${sl_price:.2f}<br>TP: ${tp_price:.2f}</div>'
+                  "</div>"
+                  "</div>"
+              )
+              st.markdown(card_html_pos, unsafe_allow_html=True)
+
+              chart_src = (
+                  raw_norm_df
+                  if raw_norm_df is not None and not raw_norm_df.empty
+                  else t_df
+              )
+              pos_chart_df = chart_src.tail(40).copy()
+              buy_dt_ts = pd.Timestamp(pos_date)
+              exp_dt_ts = buy_dt_ts + pd.Timedelta(
+                  days=int(HOLDING_PERIOD * 1.45)
+              )
+              render_fixed_candlestick(
+                  ohlc_df=pos_chart_df,
+                  title=(
+                      f"{pos_ticker} 보유 포지션 캔들차트 (매수일 및 갱신"
+                      " 손절·익절 라인)"
+                  ),
+                  sl_price=sl_price,
+                  tp_price=tp_price,
+                  entry_price=pos_price,
+                  buy_ts=buy_dt_ts,
+                  expiry_ts=exp_dt_ts,
+              )
+          except Exception as e:
+            st.error(f"포지션 진단 중 오류 발생: {e}")
+            st.code(traceback.format_exc(), language="python")
