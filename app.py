@@ -87,7 +87,7 @@ METRIC_CSS = """
     justify-content: space-between;
     gap: 10px;
     margin-top: 15px;
-    margin-bottom: 25px;
+    margin-bottom: 20px;
 }
 .metric-card {
     background-color: #1E1E1E;
@@ -106,6 +106,20 @@ METRIC_CSS = """
     font-size: 20px;
     font-weight: bold;
     color: #FFFFFF;
+}
+.metric-sub {
+    font-size: 13px;
+    margin-top: 6px;
+    font-weight: 600;
+}
+.status-pass {
+    color: #00FF7F;
+}
+.status-fail {
+    color: #FF6B6B;
+}
+.status-warn {
+    color: #FBBF24;
 }
 .pick-box {
     background: linear-gradient(180deg, #1A1D24 0%, #14171D 100%);
@@ -327,6 +341,7 @@ def render_fixed_candlestick(
       xaxis=dict(
           type="date",
           fixedrange=True,
+          rangeslider=dict(visible=False),
           gridcolor="#232834",
           showgrid=True,
       ),
@@ -847,6 +862,7 @@ else:
                   pd.to_numeric, errors="coerce"
               )
 
+              score = float(ranker_lgb.predict(x_val)[0])
               surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
               pred_tp = float(tp_regressor.predict(x_val)[0])
               close_p = float(latest["Close"].values[0])
@@ -865,11 +881,101 @@ else:
                   days=int(HOLDING_PERIOD * 1.45)
               )
 
+              # 기준 충족 여부 계산
+              surv_passed = surv_prob >= 58.0
+              atr_passed = atr_val <= 4.5
+
+              # 기준일 유니버스(ATR <= 4.5%) 내 랭킹 점수 상위 10% 여부 확인
+              rank_status_text = "비교군 없음"
+              rank_status_class = "status-warn"
+              rank_passed = False
+
+              df_univ = fetch_and_process_universe_data()
+              if not df_univ.empty:
+                day_sub = df_univ[
+                    (df_univ["Date"] == latest_bar_ts)
+                    & (df_univ["ATR_Pct"] <= 0.045)
+                ].copy()
+                if not day_sub.empty:
+                  x_day = day_sub[FEATURE_COLS].apply(
+                      pd.to_numeric, errors="coerce"
+                  )
+                  day_sub["Pred_Score"] = ranker_lgb.predict(x_day)
+                  day_sorted = day_sub.sort_values(
+                      by="Pred_Score", ascending=False
+                  ).reset_index(drop=True)
+                  top_k = max(1, int(len(day_sorted) * 0.10))
+                  top_tickers = set(day_sorted.head(top_k)["Ticker"].str.upper())
+
+                  matched_pos = day_sorted.index[
+                      day_sorted["Ticker"].str.upper() == target_ticker
+                  ].tolist()
+                  if matched_pos:
+                    cur_rank = matched_pos[0] + 1
+                    total_cnt = len(day_sorted)
+                    if target_ticker in top_tickers:
+                      rank_passed = True
+                      rank_status_text = (
+                          f"상위 10% 충족 ✅ ({cur_rank}/{total_cnt}위)"
+                      )
+                      rank_status_class = "status-pass"
+                    else:
+                      rank_status_text = (
+                          f"상위 10% 미달 ❌ ({cur_rank}/{total_cnt}위)"
+                      )
+                      rank_status_class = "status-fail"
+                  else:
+                    cutoff_score = float(
+                        day_sorted.iloc[top_k - 1]["Pred_Score"]
+                    )
+                    if score >= cutoff_score:
+                      rank_passed = True
+                      rank_status_text = "상위 10% 선 충족 ✅ (유니버스 외)"
+                      rank_status_class = "status-pass"
+                    else:
+                      rank_status_text = "상위 10% 미달 ❌ (유니버스 외)"
+                      rank_status_class = "status-fail"
+
+              surv_status_text = (
+                  "기준 충족 ✅ (≥ 58.0%)"
+                  if surv_passed
+                  else "기준 미달 ❌ (< 58.0%)"
+              )
+              surv_status_class = "status-pass" if surv_passed else "status-fail"
+
+              atr_status_text = (
+                  "기준 충족 ✅ (≤ 4.50%)"
+                  if atr_passed
+                  else "기준 미달 ❌ (> 4.50%)"
+              )
+              atr_status_class = "status-pass" if atr_passed else "status-fail"
+
+              buy_recommended = surv_passed and atr_passed
+
               st.subheader(f"📊 {target_ticker} 분석 리포트")
               st.caption(
                   f"데이터 기준일: {latest_bar_date} | 분석 시각:"
                   f" {now_kst_str()} | 소스: {source_label}"
               )
+
+              if buy_recommended:
+                st.success(
+                    f"✅ **매수 권장:** [{target_ticker}] 생존 확률"
+                    f" ({surv_prob:.1f}% ≥ 58.0%) 및 일일 ATR 변동성"
+                    f" ({atr_val:.2f}% ≤ 4.50%) 기준을 충족합니다."
+                )
+              else:
+                failed_reasons = []
+                if not surv_passed:
+                  failed_reasons.append(f"생존 확률 {surv_prob:.1f}% (< 58.0%)")
+                if not atr_passed:
+                  failed_reasons.append(f"일일 ATR {atr_val:.2f}% (> 4.50%)")
+                reason_str = ", ".join(failed_reasons)
+                st.warning(
+                    f"⛔ **매수 비권장 (관망 권장):** [{target_ticker}] 진입"
+                    f" 기준 미달 ({reason_str})"
+                )
+
               st.markdown(
                   f"**현재 종가 (진입가):** <span"
                   f' style="font-size: 28px; font-weight: bold; color:'
@@ -878,12 +984,40 @@ else:
               )
 
               st.markdown(METRIC_CSS, unsafe_allow_html=True)
-              metric_html = (
+
+              # 1행: 핵심 필터 지표 (생존 확률 / 일일 ATR 변동성 / 종목 점수 / 매수 권장 여부)
+              rec_label = "매수 권장 ✅" if buy_recommended else "관망 권장 ⛔"
+              rec_class = "status-pass" if buy_recommended else "status-fail"
+
+              filter_cards_html = (
                   '<div class="metric-container">'
                   '<div class="metric-card">'
-                  '<div class="metric-title">모델 생존 확률</div>'
+                  '<div class="metric-title">손절 생존 확률</div>'
                   f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                  f'<div class="metric-sub {surv_status_class}">{surv_status_text}</div>'
                   "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">일일 ATR 변동성</div>'
+                  f'<div class="metric-value">{atr_val:.2f}%</div>'
+                  f'<div class="metric-sub {atr_status_class}">{atr_status_text}</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">종목 점수 (랭킹)</div>'
+                  f'<div class="metric-value">{score:.4f}</div>'
+                  f'<div class="metric-sub {rank_status_class}">{rank_status_text}</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">매수 권장 여부</div>'
+                  f'<div class="metric-value {rec_class}">{rec_label}</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">생존≥58% &amp; ATR≤4.5%</div>'
+                  "</div>"
+                  "</div>"
+              )
+              st.markdown(filter_cards_html, unsafe_allow_html=True)
+
+              # 2행: 손절가 / 익절가 / 목표익절폭
+              metric_html = (
+                  '<div class="metric-container">'
                   '<div class="metric-card">'
                   '<div class="metric-title">권장 손절가</div>'
                   f'<div class="metric-value">${sl_price:.2f} <span'
@@ -1121,7 +1255,6 @@ else:
                 st.subheader(
                     f"📈 매수 시점 ~ {HOLDING_PERIOD}거래일 보유 만기 캔들차트"
                 )
-                # 매수 전 10일 버퍼 + 보유 기간 이후 5일 버퍼를 합쳐 시각화
                 pre_sub = full_t_df[
                     full_t_df["DateOnly"] < target_date
                 ].tail(10)
