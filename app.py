@@ -106,6 +106,68 @@ METRIC_CSS = """
     font-weight: bold;
     color: #FFFFFF;
 }
+.pick-box {
+    background: linear-gradient(180deg, #1A1D24 0%, #14171D 100%);
+    border: 1px solid #2E3544;
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+}
+.pick-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #2A303C;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+}
+.pick-rank-ticker {
+    font-size: 20px;
+    font-weight: 700;
+    color: #FFFFFF;
+}
+.pick-surv {
+    background-color: rgba(0, 255, 127, 0.12);
+    color: #00FF7F;
+    border: 1px solid rgba(0, 255, 127, 0.35);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-weight: 700;
+}
+.pick-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+.pick-item {
+    background-color: #111318;
+    border: 1px solid #232834;
+    border-radius: 8px;
+    padding: 12px;
+}
+.pick-item-label {
+    font-size: 12px;
+    color: #9AA4B2;
+    margin-bottom: 4px;
+}
+.pick-item-val {
+    font-size: 17px;
+    font-weight: 700;
+    color: #F3F4F6;
+}
+.pick-sl {
+    color: #FF6B6B;
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 4px;
+}
+.pick-tp {
+    color: #4ECDC4;
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 4px;
+}
 </style>
 """
 
@@ -535,7 +597,46 @@ else:
     if df_display is not None and not df_display.empty:
       if scan_timestamp:
         st.markdown(f"📅 **타겟 기준일 (최신 마감일):** `{scan_timestamp}`")
-      st.dataframe(df_display, use_container_width=True)
+
+      st.markdown(METRIC_CSS, unsafe_allow_html=True)
+
+      # 추천 종목 수만큼 카드 박스 생성 (2열 그리드 배치)
+      cards_per_row = 2
+      num_picks = len(df_display)
+      for start_idx in range(0, num_picks, cards_per_row):
+        cols = st.columns(cards_per_row)
+        for offset in range(cards_per_row):
+          row_idx = start_idx + offset
+          if row_idx >= num_picks:
+            continue
+          r = df_display.iloc[row_idx]
+          with cols[offset]:
+            box_html = (
+                '<div class="pick-box">'
+                '<div class="pick-header">'
+                f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]}</div>'
+                f'<div class="pick-surv">생존확률 {r["생존확률"]}</div>'
+                "</div>"
+                '<div class="pick-grid">'
+                '<div class="pick-item">'
+                '<div class="pick-item-label">진입가($)</div>'
+                f'<div class="pick-item-val">${r["진입가($)"]:.2f}</div>'
+                "</div>"
+                '<div class="pick-item">'
+                '<div class="pick-item-label">손절가 / 조정 손절폭</div>'
+                f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["조정 손절폭(%)"].strip()})</span></div>'
+                "</div>"
+                '<div class="pick-item">'
+                '<div class="pick-item-label">동적익절가 / 동적 익절폭</div>'
+                f'<div class="pick-item-val">${r["동적익절가($)"]:.2f}<span class="pick-tp">({r["동적 익절폭(%)"].strip()})</span></div>'
+                "</div>"
+                "</div>"
+                "</div>"
+            )
+            st.markdown(box_html, unsafe_allow_html=True)
+
+      st.markdown("#### 📋 전체 추천 종목 요약 표")
+      st.dataframe(df_display, use_container_width=True, hide_index=True)
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
