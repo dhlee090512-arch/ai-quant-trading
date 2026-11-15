@@ -141,6 +141,20 @@ METRIC_CSS = """
     font-weight: 700;
     color: #FFFFFF;
 }
+.pick-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.pick-score {
+    background-color: rgba(56, 189, 248, 0.14);
+    color: #38BDF8;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 700;
+}
 .pick-surv {
     background-color: rgba(0, 255, 127, 0.12);
     color: #00FF7F;
@@ -690,6 +704,9 @@ else:
     df_display = None
     scan_timestamp = None
     run_time_kst = now_kst_str()
+    top10_cutoff_score = None
+    avg_filtered_score = None
+    avg_universe_score = None
 
     with st.spinner(
         "코랩 전처리 파이프라인 가동 중 (전체 벌크 다운로드 및 팩터 연산)..."
@@ -721,8 +738,13 @@ else:
 
             group_sorted = latest_subset.sort_values(
                 by="Pred_Score", ascending=False
-            )
+            ).reset_index(drop=True)
             top_k = max(1, int(len(group_sorted) * 0.10))
+            top10_cutoff_score = float(
+                group_sorted.iloc[top_k - 1]["Pred_Score"]
+            )
+            avg_universe_score = float(group_sorted["Pred_Score"].mean())
+
             top_candidates = group_sorted.head(top_k)
 
             MIN_SURVIVE_PROB_COLAB = 0.58
@@ -731,6 +753,7 @@ else:
             ].reset_index(drop=True)
 
             if len(filtered_latest) > 0:
+              avg_filtered_score = float(filtered_latest["Pred_Score"].mean())
               MAX_SL_LIMIT = -8.0
               display_results = []
 
@@ -738,6 +761,7 @@ else:
                 rank_num = idx + 1
                 entry_price = float(row["Close"])
                 atr_val = float(row["ATR_Pct"]) * 100
+                pred_score_val = float(row["Pred_Score"])
 
                 sl_pct = max(-(atr_val * 1.5), MAX_SL_LIMIT)
                 model_pred_tp = float(row["Predicted_TP"])
@@ -751,6 +775,7 @@ else:
                 display_results.append({
                     "순위": rank_num,
                     "Ticker": row["Ticker"],
+                    "종목 점수": round(pred_score_val, 4),
                     "진입가($)": round(entry_price, 2),
                     "손절가($)": round(sl_price, 2),
                     "조정 손절폭(%)": f"{sl_pct:.2f} %",
@@ -803,7 +828,10 @@ else:
                 '<div class="pick-box">'
                 '<div class="pick-header">'
                 f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]}</div>'
+                '<div class="pick-badges">'
+                f'<div class="pick-score">종목 점수 {r["종목 점수"]:.4f}</div>'
                 f'<div class="pick-surv">생존확률 {r["생존확률"]}</div>'
+                "</div>"
                 "</div>"
                 '<div class="pick-grid">'
                 '<div class="pick-item">'
@@ -825,6 +853,43 @@ else:
 
       st.markdown("#### 📋 전체 추천 종목 요약 표")
       st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+      cutoff_str = (
+          f"{top10_cutoff_score:.4f}"
+          if top10_cutoff_score is not None
+          else "-"
+      )
+      avg_rec_str = (
+          f"{avg_filtered_score:.4f}"
+          if avg_filtered_score is not None
+          else "-"
+      )
+      avg_univ_str = (
+          f"{avg_universe_score:.4f}"
+          if avg_universe_score is not None
+          else "-"
+      )
+
+      summary_cards_html = (
+          '<div class="metric-container">'
+          '<div class="metric-card">'
+          '<div class="metric-title">상위 10% 종목 점수 (커트라인)</div>'
+          f'<div class="metric-value" style="color:#38BDF8;">{cutoff_str}</div>'
+          '<div class="metric-sub" style="color:#AAAAAA;">당일 변동성 필터 통과군 상위 10% 경계</div>'
+          "</div>"
+          '<div class="metric-card">'
+          '<div class="metric-title">추천 종목 평균 종목 점수</div>'
+          f'<div class="metric-value" style="color:#00FF7F;">{avg_rec_str}</div>'
+          '<div class="metric-sub" style="color:#AAAAAA;">최종 선별 추천 종목 평균</div>'
+          "</div>"
+          '<div class="metric-card">'
+          '<div class="metric-title">전체 대상 평균 종목 점수</div>'
+          f'<div class="metric-value">{avg_univ_str}</div>'
+          '<div class="metric-sub" style="color:#AAAAAA;">당일 변동성 필터 통과 전체 종목 평균</div>'
+          "</div>"
+          "</div>"
+      )
+      st.markdown(summary_cards_html, unsafe_allow_html=True)
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
@@ -881,14 +946,11 @@ else:
                   days=int(HOLDING_PERIOD * 1.45)
               )
 
-              # 기준 충족 여부 계산
               surv_passed = surv_prob >= 58.0
               atr_passed = atr_val <= 4.5
 
-              # 기준일 유니버스(ATR <= 4.5%) 내 랭킹 점수 상위 10% 여부 확인
               rank_status_text = "비교군 없음"
               rank_status_class = "status-warn"
-              rank_passed = False
 
               df_univ = fetch_and_process_universe_data()
               if not df_univ.empty:
@@ -914,7 +976,6 @@ else:
                     cur_rank = matched_pos[0] + 1
                     total_cnt = len(day_sorted)
                     if target_ticker in top_tickers:
-                      rank_passed = True
                       rank_status_text = (
                           f"상위 10% 충족 ✅ ({cur_rank}/{total_cnt}위)"
                       )
@@ -929,7 +990,6 @@ else:
                         day_sorted.iloc[top_k - 1]["Pred_Score"]
                     )
                     if score >= cutoff_score:
-                      rank_passed = True
                       rank_status_text = "상위 10% 선 충족 ✅ (유니버스 외)"
                       rank_status_class = "status-pass"
                     else:
@@ -985,7 +1045,6 @@ else:
 
               st.markdown(METRIC_CSS, unsafe_allow_html=True)
 
-              # 1행: 핵심 필터 지표 (생존 확률 / 일일 ATR 변동성 / 종목 점수 / 매수 권장 여부)
               rec_label = "매수 권장 ✅" if buy_recommended else "관망 권장 ⛔"
               rec_class = "status-pass" if buy_recommended else "status-fail"
 
@@ -1015,7 +1074,6 @@ else:
               )
               st.markdown(filter_cards_html, unsafe_allow_html=True)
 
-              # 2행: 손절가 / 익절가 / 목표익절폭
               metric_html = (
                   '<div class="metric-container">'
                   '<div class="metric-card">'
