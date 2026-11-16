@@ -913,8 +913,9 @@ else:
 
             if t_df.empty or len(t_df) < 30:
               st.error(
-                  f"'{target_ticker}'에 대한 충분한 데이터가 없습니다. 티커"
-                  " 오타를 확인해주세요."
+                  f"'{target_ticker}'에 대한 충분한 데이터가 없습니다. 상장한 지"
+                  " 얼마 되지 않아 누적 거래일 수가 적거나(최소 100거래일"
+                  " 필요) 티커 오타일 수 있습니다."
               )
             else:
               source_label = (
@@ -1146,7 +1147,8 @@ else:
             if df_t.empty:
               st.error(
                   f"'{target_ticker}'에 대한 충분한 데이터를 가져오지"
-                  " 못했습니다."
+                  " 못했습니다. 상장한 지 얼마 되지 않아 누적 거래일 수가"
+                  " 적거나(최소 100거래일 필요) 티커 오타일 수 있습니다."
               )
             else:
               source_label = (
@@ -1387,6 +1389,9 @@ else:
             if t_df.empty or len(t_df) < 30:
               st.error(
                   f"'{pos_ticker}' 종목 데이터를 충분히 가져오지 못했습니다."
+                  " 상장한 지 얼마 되지 않아 누적 거래일 수가 적어(최소"
+                  " 100거래일 필요) 지표 산출 기준을 충족하지 못했거나 티커를"
+                  " 찾지 못했을 수 있습니다."
               )
             else:
               source_label = (
