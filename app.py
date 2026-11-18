@@ -726,9 +726,11 @@ def render_scanner_view(
     config: dict,
     feature_cols: list[str],
     date_label_prefix: str,
+    last_fetched_kst: str | None = None,
     requested_date_str: str | None = None,
 ):
   run_time_kst = now_kst_str()
+  fetched_str = last_fetched_kst or run_time_kst
   df_eligible = df_clean[df_clean["Date"] <= target_date_ts].copy()
 
   if df_eligible.empty:
@@ -741,7 +743,7 @@ def render_scanner_view(
   effective_date = df_eligible["Date"].max()
   effective_date_str = pd.to_datetime(effective_date).strftime("%Y-%m-%d")
   scan_timestamp = (
-      f"{effective_date_str} (조회 시각: {run_time_kst})"
+      f"{effective_date_str} | 마지막 데이터 다운로드: {fetched_str}"
   )
 
   if requested_date_str and requested_date_str != effective_date_str:
@@ -870,9 +872,9 @@ def render_scanner_view(
         "을 충족하는 종목이 없습니다. (관망)"
     )
 
-  if df_display is not None and not df_display.empty:
-    st.markdown(f"📅 **{date_label_prefix}:** `{scan_timestamp}`")
+  st.markdown(f"📅 **{date_label_prefix}:** `{scan_timestamp}`")
 
+  if df_display is not None and not df_display.empty:
     st.markdown(METRIC_CSS, unsafe_allow_html=True)
 
     cards_per_row = 2
@@ -955,7 +957,7 @@ def render_scanner_view(
     st.markdown("---")
     st.markdown("#### 🏆 기준일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
     st.caption(
-        f"기준일: {effective_date_str} | "
+        f"기준일: {effective_date_str} | 마지막 데이터 다운로드: {fetched_str} | "
         f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {top_n_percent:.0f}% 컷 · "
         f"익절선달성률 ≥ {min_tp_hit_prob*100:.0f}% · ATR < {max_atr_pct:.1f}% 참고 표시)"
     )
@@ -994,7 +996,8 @@ else:
   ]
 
   @st.cache_data(ttl=3600)
-  def fetch_and_process_universe_data():
+  def fetch_and_process_universe_with_meta():
+    fetched_kst = now_kst_str()
     download_list = list(set(UNIVERSE_TICKERS + ["^VIX", "SPY"]))
     df_raw_yf = yf.download(
         download_list, start="2018-01-01", progress=False, session=session
@@ -1048,7 +1051,7 @@ else:
         processed_dfs.append(g)
 
     if not processed_dfs:
-      return pd.DataFrame()
+      return pd.DataFrame(), fetched_kst
 
     df_all = pd.concat(processed_dfs, ignore_index=True)
     df_all = pd.merge(df_all, market_data, on="Date", how="inner")
@@ -1066,6 +1069,10 @@ else:
       df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
     df_clean = df_all.dropna(subset=req_cols).reset_index(drop=True)
+    return df_clean, fetched_kst
+
+  def fetch_and_process_universe_data():
+    df_clean, _ = fetch_and_process_universe_with_meta()
     return df_clean
 
   @st.cache_data(ttl=3600)
@@ -1172,7 +1179,8 @@ else:
         "유니버스 시세·테마 팩터 연산 및 3중 앙상블 추론 중..."
     ):
       try:
-        df_clean = fetch_and_process_universe_data()
+        df_clean, last_fetched_kst = fetch_and_process_universe_with_meta()
+        st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
         if not df_clean.empty:
           latest_date = pd.Timestamp(df_clean["Date"].max())
           render_scanner_view(
@@ -1184,6 +1192,7 @@ else:
               config=MODEL_CONFIG,
               feature_cols=FEATURE_COLS,
               date_label_prefix="타겟 기준일 (최신 마감일)",
+              last_fetched_kst=last_fetched_kst,
           )
         else:
           st.error("데이터 전처리 결과가 비어 있습니다.")
@@ -1219,7 +1228,8 @@ else:
         " 추론 중..."
     ):
       try:
-        df_clean = fetch_and_process_universe_data()
+        df_clean, last_fetched_kst = fetch_and_process_universe_with_meta()
+        st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
         if not df_clean.empty:
           target_ts = pd.Timestamp(selected_scan_date)
           render_scanner_view(
@@ -1231,6 +1241,7 @@ else:
               config=MODEL_CONFIG,
               feature_cols=FEATURE_COLS,
               date_label_prefix="선택 과거 기준일",
+              last_fetched_kst=last_fetched_kst,
               requested_date_str=selected_scan_date.strftime("%Y-%m-%d"),
           )
         else:
@@ -1363,6 +1374,12 @@ else:
               )
               atr_status_class = "status-pass" if atr_passed else "status-fail"
 
+              rank_headline_text = (
+                  f"상위 {TOP_N_PERCENT:.0f}% 충족 ✅"
+                  if in_top_pct
+                  else f"상위 {TOP_N_PERCENT:.0f}% 미달 ❌"
+              )
+
               buy_recommended = prob_passed and in_top_pct and atr_passed
 
               st.subheader(f"📊 {target_ticker} [{theme_val}] 분석 리포트")
@@ -1430,8 +1447,8 @@ else:
                   "</div>"
                   '<div class="metric-card">'
                   f'<div class="metric-title">상위 {TOP_N_PERCENT:.0f}% 랭킹 여부</div>'
-                  f'<div class="metric-value" style="font-size:16px;">{theme_val}</div>'
-                  f'<div class="metric-sub {rank_status_class}">{rank_status_text}</div>'
+                  f'<div class="metric-value {rank_status_class}" style="font-size:17px;">{rank_headline_text}</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">{rank_status_text} · 테마 {theme_val}</div>'
                   "</div>"
                   '<div class="metric-card">'
                   '<div class="metric-title">매수 권장 여부</div>'
