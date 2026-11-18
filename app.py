@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import gc
 import json
 import os
 import traceback
@@ -13,6 +12,7 @@ import streamlit as st
 import yfinance as yf
 
 KST = ZoneInfo("Asia/Seoul")
+DATA_START_DATE = "2023-01-01"
 
 
 def now_kst_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
@@ -38,25 +38,6 @@ session.headers.update({
         " like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 })
-
-# 로그 기준 상장폐지/인수합병/티커 변경 등으로 실패하는 티커 제외 목록
-FAILED_OR_DELISTED_TICKERS: set[str] = {
-    "DFS",
-    "ACCD",
-    "EXAS",
-    "FOLD",
-    "MASI",
-    "MMC",
-    "ANSS",
-    "GPS",
-    "JNPR",
-    "BK",
-    "FI",
-    "HOLX",
-    "SGEN",
-    "CTLT",
-    "JWN",
-}
 
 # 기존 model_config에 없는 종목만 테마별 35개씩(총 140개) 신규 추가
 RAW_NEW_TICKERS_BY_THEME: dict[str, list[str]] = {
@@ -218,12 +199,7 @@ def build_clean_new_tickers_by_theme() -> dict[str, list[str]]:
     theme_list: list[str] = []
     for tk in tickers:
       norm_tk = str(tk).strip().upper()
-      if (
-          norm_tk
-          and norm_tk != "IT"
-          and norm_tk not in FAILED_OR_DELISTED_TICKERS
-          and norm_tk not in seen_new
-      ):
+      if norm_tk and norm_tk != "IT" and norm_tk not in seen_new:
         seen_new.add(norm_tk)
         theme_list.append(norm_tk)
     cleaned[theme_name] = theme_list
@@ -242,37 +218,30 @@ NEW_UNIVERSE_TICKERS: list[str] = list(NEW_THEME_MAP.keys())
 def merge_config_with_new_tickers(config: dict, config_path: str) -> dict:
   updated_cfg = dict(config) if isinstance(config, dict) else {}
 
+  # 1. 기존 model_config의 theme_map 유지(비정상 'IT' 키만 정리)
   merged_theme_map: dict[str, str] = {}
   raw_theme_map = updated_cfg.get("theme_map", {})
   if isinstance(raw_theme_map, dict):
     for k, v in raw_theme_map.items():
       norm_k = str(k).strip().upper()
-      if (
-          norm_k
-          and norm_k != "IT"
-          and norm_k not in FAILED_OR_DELISTED_TICKERS
-          and v
-      ):
+      if norm_k and norm_k != "IT" and v:
         merged_theme_map[norm_k] = str(v)
 
+  # 2. 기존에 없는 신규 140개 종목만 추가
   for tk, theme_name in NEW_THEME_MAP.items():
     if tk not in merged_theme_map:
       merged_theme_map[tk] = theme_name
 
   updated_cfg["theme_map"] = merged_theme_map
 
+  # 3. 기존 model_config의 universe_tickers 유지 후 신규 종목 추가
   norm_universe: list[str] = []
   seen_univ: set[str] = set()
   raw_universe = updated_cfg.get("universe_tickers", [])
   if isinstance(raw_universe, list):
     for tk in raw_universe:
       norm_tk = str(tk).strip().upper()
-      if (
-          norm_tk
-          and norm_tk != "IT"
-          and norm_tk not in FAILED_OR_DELISTED_TICKERS
-          and norm_tk not in seen_univ
-      ):
+      if norm_tk and norm_tk != "IT" and norm_tk not in seen_univ:
         seen_univ.add(norm_tk)
         norm_universe.append(norm_tk)
 
@@ -631,7 +600,7 @@ def render_fixed_candlestick(
 
   st.plotly_chart(
       fig,
-      width="stretch",
+      use_container_width=True,
       config={"staticPlot": True, "displayModeBar": False},
   )
 
@@ -675,11 +644,6 @@ def normalize_ohlcv_df(raw_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_market_tables(df_fresh: pd.DataFrame):
-  if df_fresh is None or df_fresh.empty or "Ticker" not in df_fresh.columns:
-    return pd.DataFrame(
-        columns=["Date", "VIX", "VIX_Change_1d", "VIX_Change_5d", "VIX_Pos_20d"]
-    ), pd.DataFrame(columns=["Date", "SPY_Ret_5d"])
-
   market_mask = df_fresh["Ticker"].str.upper().isin(["^VIX", "VIX", "SPY"])
   market_data = df_fresh[market_mask][["Date", "Ticker", "Close"]].copy()
   market_data["Ticker"] = (
@@ -1091,7 +1055,7 @@ def render_scanner_view(
           st.markdown(box_html, unsafe_allow_html=True)
 
     st.markdown("#### 📋 전체 추천 종목 요약 표")
-    st.dataframe(df_display, width="stretch", hide_index=True)
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     cutoff_str = (
         f"{top_cutoff_score:.4f}" if top_cutoff_score is not None else "-"
@@ -1136,7 +1100,7 @@ def render_scanner_view(
         f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {top_n_percent:.0f}% 컷 · "
         f"익절선달성률 ≥ {min_tp_hit_prob*100:.0f}% · ATR < {max_atr_pct:.1f}% 참고 표시)"
     )
-    st.dataframe(df_top10_all, width="stretch", hide_index=True)
+    st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
 
 
 # 모델 로드 실패 시 에러 안내 문구 출력
@@ -1155,9 +1119,7 @@ else:
   UNIVERSE_TICKERS = [
       str(t).strip().upper()
       for t in MODEL_CONFIG.get("universe_tickers", NEW_UNIVERSE_TICKERS)
-      if str(t).strip().upper()
-      and str(t).strip().upper() != "IT"
-      and str(t).strip().upper() not in FAILED_OR_DELISTED_TICKERS
+      if str(t).strip().upper() and str(t).strip().upper() != "IT"
   ]
 
   base_numeric_cols = [
@@ -1173,27 +1135,13 @@ else:
       }
   ]
 
-  DATA_START_DATE = "2022-01-01"
-
-  @st.cache_data(ttl=3600, show_spinner=False)
-  def fetch_and_process_universe_with_meta(
-      universe_tuple: tuple[str, ...], start_date: str
-  ):
+  @st.cache_data(ttl=3600)
+  def fetch_and_process_universe_with_meta(start_date: str = DATA_START_DATE):
     fetched_kst = now_kst_str()
-    active_list = [
-        t for t in universe_tuple if t not in FAILED_OR_DELISTED_TICKERS
-    ]
-    download_list = list(dict.fromkeys(active_list + ["^VIX", "SPY"]))
+    download_list = list(set(UNIVERSE_TICKERS + ["^VIX", "SPY"]))
     df_raw_yf = yf.download(
-        download_list,
-        start=start_date,
-        progress=False,
-        auto_adjust=True,
-        session=session,
+        download_list, start=start_date, progress=False, session=session
     )
-
-    if df_raw_yf is None or df_raw_yf.empty:
-      return pd.DataFrame(), fetched_kst
 
     if isinstance(df_raw_yf.columns, pd.MultiIndex):
       df_fresh = df_raw_yf.stack(future_stack=True).reset_index()
@@ -1225,37 +1173,27 @@ else:
     df_fresh = df_fresh.rename(columns=rename_map)
 
     if "Date" in df_fresh.columns:
-      df_fresh["Date"] = pd.to_datetime(
-          df_fresh["Date"], errors="coerce"
-      ).dt.tz_localize(None)
+      df_fresh["Date"] = pd.to_datetime(df_fresh["Date"]).dt.tz_localize(None)
     if "Ticker" in df_fresh.columns:
       df_fresh["Ticker"] = df_fresh["Ticker"].astype(str).str.upper()
-    df_fresh = df_fresh.dropna(subset=["Date", "Close"])
+    df_fresh = df_fresh.dropna(subset=["Close"])
 
     market_data, spy_df = build_market_tables(df_fresh)
 
     df_stocks = df_fresh[
         ~df_fresh["Ticker"].isin(["VIX", "^VIX", "SPY"])
     ].copy()
-    del df_raw_yf, df_fresh
-    gc.collect()
-
     processed_dfs = []
+
     for _, group in df_stocks.groupby("Ticker"):
       g = compute_stock_factors(group)
       if not g.empty:
         processed_dfs.append(g)
 
-    del df_stocks
-    gc.collect()
-
     if not processed_dfs:
       return pd.DataFrame(), fetched_kst
 
     df_all = pd.concat(processed_dfs, ignore_index=True)
-    del processed_dfs
-    gc.collect()
-
     df_all = pd.merge(df_all, market_data, on="Date", how="inner")
     df_all = pd.merge(
         df_all, spy_df[["Date", "SPY_Ret_5d"]], on="Date", how="inner"
@@ -1271,25 +1209,23 @@ else:
       df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
     df_clean = df_all.dropna(subset=req_cols).reset_index(drop=True)
-    del df_all
-    gc.collect()
     return df_clean, fetched_kst
 
   def fetch_and_process_universe_data():
-    df_clean, _ = fetch_and_process_universe_with_meta(
-        tuple(UNIVERSE_TICKERS), DATA_START_DATE
-    )
+    df_clean, _ = fetch_and_process_universe_with_meta(DATA_START_DATE)
     return df_clean
 
-  @st.cache_data(ttl=3600, show_spinner=False)
-  def fetch_single_ticker_with_market(ticker_upper: str):
+  @st.cache_data(ttl=3600)
+  def fetch_single_ticker_with_market(
+      ticker_upper: str, start_date: str = DATA_START_DATE
+  ):
     df_clean = fetch_and_process_universe_data()
     if not df_clean.empty:
       matched = df_clean[df_clean["Ticker"] == ticker_upper].copy()
       if not matched.empty:
         raw_single = yf.download(
             ticker_upper,
-            start=DATA_START_DATE,
+            start=start_date,
             progress=False,
             auto_adjust=True,
             session=session,
@@ -1299,7 +1235,7 @@ else:
 
     raw_single = yf.download(
         ticker_upper,
-        start=DATA_START_DATE,
+        start=start_date,
         progress=False,
         auto_adjust=True,
         session=session,
@@ -1312,7 +1248,7 @@ else:
 
     market_raw = yf.download(
         ["^VIX", "SPY"],
-        start=DATA_START_DATE,
+        start=start_date,
         progress=False,
         auto_adjust=True,
         session=session,
@@ -1378,7 +1314,8 @@ else:
     st.caption(
         f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
         f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 "
-        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
+        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개) · "
+        f"조회 시작일: {DATA_START_DATE}"
     )
 
     with st.spinner(
@@ -1386,7 +1323,7 @@ else:
     ):
       try:
         df_clean, last_fetched_kst = fetch_and_process_universe_with_meta(
-            tuple(UNIVERSE_TICKERS), DATA_START_DATE
+            DATA_START_DATE
         )
         st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
         if not df_clean.empty:
@@ -1420,7 +1357,8 @@ else:
     st.caption(
         f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
         f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 "
-        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
+        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개) · "
+        f"조회 시작일: {DATA_START_DATE}"
     )
 
     default_past_scan_date = (datetime.now(KST) - timedelta(days=1)).date()
@@ -1437,7 +1375,7 @@ else:
     ):
       try:
         df_clean, last_fetched_kst = fetch_and_process_universe_with_meta(
-            tuple(UNIVERSE_TICKERS), DATA_START_DATE
+            DATA_START_DATE
         )
         st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
         if not df_clean.empty:
@@ -1477,7 +1415,7 @@ else:
         with st.spinner(f"{target_ticker} 분석 중..."):
           try:
             t_df, raw_norm_df, in_universe = fetch_single_ticker_with_market(
-                target_ticker
+                target_ticker, DATA_START_DATE
             )
 
             if t_df.empty or len(t_df) < 30:
@@ -1735,7 +1673,7 @@ else:
         with st.spinner(f"{target_ticker} 과거 데이터 조회 및 사후 검증 중..."):
           try:
             df_t, full_t_df, in_universe = fetch_single_ticker_with_market(
-                target_ticker
+                target_ticker, DATA_START_DATE
             )
 
             if df_t.empty:
@@ -1991,7 +1929,7 @@ else:
         with st.spinner(f"{pos_ticker} 실시간 분석 중..."):
           try:
             t_df, raw_norm_df, in_universe = fetch_single_ticker_with_market(
-                pos_ticker
+                pos_ticker, DATA_START_DATE
             )
 
             if t_df.empty or len(t_df) < 30:
