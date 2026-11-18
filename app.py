@@ -907,48 +907,66 @@ def render_scanner_view(
   )
   avg_universe_score = float(group_sorted["Adjusted_Pred_Score"].mean())
 
-  top10_rows = []
-  for r_idx, t_row in group_sorted.head(10).iterrows():
-    rank_pos = r_idx + 1
-    t_entry = float(t_row["Close"])
-    t_atr_pct = float(t_row["ATR_Pct"]) * 100.0
-    t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
-        t_entry,
-        float(t_row["ATR_Pct"]),
-        float(t_row["Predicted_TP"]),
-        config,
-    )
-    t_prob_val = float(t_row["TP_Hit_Prob"])
-    in_top_k = rank_pos <= top_k
-    prob_ok = t_prob_val >= min_tp_hit_prob
-    atr_ok = t_atr_pct < max_atr_pct
+  rank_lookup = {
+      str(tk).upper(): idx + 1 for idx, tk in enumerate(group_sorted["Ticker"])
+  }
 
-    if in_top_k and prob_ok and atr_ok:
-      status_badge = "선별 충족 ✅"
-    elif in_top_k and not atr_ok:
-      status_badge = f"ATR {max_atr_pct:.1f}% 초과 ❌"
-    elif in_top_k and not prob_ok:
-      status_badge = "상위컷 충족·확률 미달 ⚠️"
-    else:
-      status_badge = "상위컷 외 ❌"
+  def build_top10_rows(df_ranked_subset: pd.DataFrame) -> list[dict]:
+    rows = []
+    for r_idx, t_row in enumerate(df_ranked_subset.itertuples(index=False)):
+      tk_str = str(getattr(t_row, "Ticker", "")).upper()
+      rank_pos = rank_lookup.get(tk_str, r_idx + 1)
+      t_entry = float(getattr(t_row, "Close"))
+      t_atr_pct = float(getattr(t_row, "ATR_Pct")) * 100.0
+      t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
+          t_entry,
+          float(getattr(t_row, "ATR_Pct")),
+          float(getattr(t_row, "Predicted_TP")),
+          config,
+      )
+      t_prob_val = float(getattr(t_row, "TP_Hit_Prob"))
+      t_adj_score = float(getattr(t_row, "Adjusted_Pred_Score"))
+      t_pred_score = float(getattr(t_row, "Pred_Score"))
+      t_theme_boost = float(getattr(t_row, "Theme_Boost"))
+      t_theme = str(getattr(t_row, "Theme", "-"))
 
-    top10_rows.append({
-        "순위": rank_pos,
-        "Ticker": t_row["Ticker"],
-        "Theme": str(t_row.get("Theme", "-")),
-        "조정 점수": round(float(t_row["Adjusted_Pred_Score"]), 4),
-        "기본 점수": round(float(t_row["Pred_Score"]), 4),
-        "테마가산점": f"{float(t_row['Theme_Boost']):+.3f}",
-        "ATR(%)": f"{t_atr_pct:.2f}%",
-        "진입가($)": round(t_entry, 2),
-        "손절가($)": round(t_sl_p, 2),
-        "손절폭(%)": f"{t_sl_pct:.2f}%",
-        "익절가($)": round(t_tp_p, 2),
-        "익절폭(%)": f"+{t_tp_pct:.2f}%",
-        "익절선달성률": f"{t_prob_val * 100.0:.1f}%",
-        "선별 상태": status_badge,
-    })
-  df_top10_all = pd.DataFrame(top10_rows)
+      in_top_k = rank_pos <= top_k
+      prob_ok = t_prob_val >= min_tp_hit_prob
+      atr_ok = t_atr_pct < max_atr_pct
+
+      if in_top_k and prob_ok and atr_ok:
+        status_badge = "선별 충족 ✅"
+      elif in_top_k and not atr_ok:
+        status_badge = f"ATR {max_atr_pct:.1f}% 초과 ❌"
+      elif in_top_k and not prob_ok:
+        status_badge = "상위컷 충족·확률 미달 ⚠️"
+      else:
+        status_badge = "상위컷 외 ❌"
+
+      rows.append({
+          "순위": rank_pos,
+          "Ticker": tk_str,
+          "Theme": t_theme,
+          "조정 점수": round(t_adj_score, 4),
+          "기본 점수": round(t_pred_score, 4),
+          "테마가산점": f"{t_theme_boost:+.3f}",
+          "ATR(%)": f"{t_atr_pct:.2f}%",
+          "진입가($)": round(t_entry, 2),
+          "손절가($)": round(t_sl_p, 2),
+          "손절폭(%)": f"{t_sl_pct:.2f}%",
+          "익절가($)": round(t_tp_p, 2),
+          "익절폭(%)": f"+{t_tp_pct:.2f}%",
+          "익절선달성률": f"{t_prob_val * 100.0:.1f}%",
+          "선별 상태": status_badge,
+      })
+    return rows
+
+  df_top10_all = pd.DataFrame(build_top10_rows(group_sorted.head(10)))
+
+  prob_sorted = scored_latest.sort_values(
+      by="TP_Hit_Prob", ascending=False
+  ).reset_index(drop=True)
+  df_top10_prob = pd.DataFrame(build_top10_rows(prob_sorted.head(10)))
 
   top_candidates = group_sorted.head(top_k).copy()
   top_candidates["ATR_Pct_Val"] = (
@@ -1055,7 +1073,7 @@ def render_scanner_view(
           st.markdown(box_html, unsafe_allow_html=True)
 
     st.markdown("#### 📋 전체 추천 종목 요약 표")
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
+    st.dataframe(df_display, width="stretch", hide_index=True)
 
     cutoff_str = (
         f"{top_cutoff_score:.4f}" if top_cutoff_score is not None else "-"
@@ -1100,7 +1118,15 @@ def render_scanner_view(
         f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {top_n_percent:.0f}% 컷 · "
         f"익절선달성률 ≥ {min_tp_hit_prob*100:.0f}% · ATR < {max_atr_pct:.1f}% 참고 표시)"
     )
-    st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
+    st.dataframe(df_top10_all, width="stretch", hide_index=True)
+
+  if df_top10_prob is not None and not df_top10_prob.empty:
+    st.markdown("#### 🎯 기준일 익절선달성률 상위 10개 종목 (진입 선별 기준 무관)")
+    st.caption(
+        f"기준일: {effective_date_str} | 마지막 데이터 다운로드: {fetched_str} | "
+        f"TP_Hit_Prob 내림차순 상위 10개 (`순위`는 조정 점수 기준 전체 순위 표시)"
+    )
+    st.dataframe(df_top10_prob, width="stretch", hide_index=True)
 
 
 # 모델 로드 실패 시 에러 안내 문구 출력
