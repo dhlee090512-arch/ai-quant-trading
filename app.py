@@ -25,8 +25,8 @@ st.set_page_config(
 
 st.title("🚀 AI 기반 퀀트 트레이딩 시스템")
 st.write(
-    "LightGBM 3중 앙상블 모델 기반 실전 분석 대시보드 (코랩 셀 1·2 전처리 파이프라인"
-    " 100% 동기화)"
+    "LightGBM 3중 앙상블 모델 기반 실전 분석 대시보드 (테마 롤링 가산점 &"
+    " 목표 익절 선달성 확률 동기화)"
 )
 
 # 야후 파이낸스 차단 우회를 위한 세션 설정
@@ -37,6 +37,25 @@ session.headers.update({
         " like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 })
+
+DEFAULT_THEME_MAP = {
+    "AAPL": "IT", "MSFT": "IT", "NVDA": "IT", "AVGO": "IT", "AMD": "IT",
+    "TSM": "IT", "INTC": "IT", "QCOM": "IT", "MU": "IT", "AMAT": "IT",
+    "MRVL": "IT", "ORCL": "IT", "CRM": "IT", "ADBE": "IT", "CSCO": "IT",
+    "JPM": "Finance", "BAC": "Finance", "WFC": "Finance", "GS": "Finance",
+    "MS": "Finance", "C": "Finance", "BLK": "Finance", "SCHW": "Finance",
+    "AXP": "Finance", "V": "Finance", "MA": "Finance", "COF": "Finance",
+    "UNH": "Healthcare", "JNJ": "Healthcare", "LLY": "Healthcare",
+    "ABBV": "Healthcare", "MRK": "Healthcare", "PFE": "Healthcare",
+    "TMO": "Healthcare", "ABT": "Healthcare", "AMGN": "Healthcare",
+    "GILD": "Healthcare", "ISRG": "Healthcare", "MDT": "Healthcare",
+    "WMT": "Defensive", "COST": "Defensive", "PG": "Defensive",
+    "KO": "Defensive", "PEP": "Defensive", "TGT": "Defensive",
+    "LOW": "Defensive", "HD": "Defensive", "TJX": "Defensive",
+    "TAP": "Defensive", "TSN": "Defensive", "KDP": "Defensive",
+    "YUM": "Defensive", "KHC": "Defensive", "ADM": "Defensive",
+    "CL": "Defensive", "GIS": "Defensive", "K": "Defensive",
+}
 
 
 # 1. 깃허브에 저장된 모델, 피처 목록 및 설정 메타데이터 로드 (캐싱 적용)
@@ -246,7 +265,6 @@ def render_fixed_candlestick(
       )
   )
 
-  # 손절가~익절가 범위 하이라이트 영역
   low_bound = min(sl_price, tp_price)
   high_bound = max(sl_price, tp_price)
   fig.add_hrect(
@@ -270,7 +288,6 @@ def render_fixed_candlestick(
         line_width=0,
     )
 
-  # 익절가 / 손절가 가로선
   fig.add_hline(
       y=tp_price,
       line_dash="dash",
@@ -291,7 +308,6 @@ def render_fixed_candlestick(
       annotation_font=dict(color="#FF6B6B", size=11),
   )
 
-  # 매수 시점 세로선
   if buy_ts is not None:
     b_ts = pd.Timestamp(buy_ts)
     fig.add_shape(
@@ -315,7 +331,6 @@ def render_fixed_candlestick(
         bgcolor="rgba(17, 19, 24, 0.85)",
     )
 
-  # 보유 만기 시점 세로선
   if expiry_ts is not None:
     e_ts = pd.Timestamp(expiry_ts)
     fig.add_shape(
@@ -339,7 +354,6 @@ def render_fixed_candlestick(
         bgcolor="rgba(17, 19, 24, 0.85)",
     )
 
-  # y축 범위 확보 (손절가/익절가/캔들 고저가 모두 포함)
   y_min = min(float(df_c["Low"].min()), sl_price, tp_price)
   y_max = max(float(df_c["High"].max()), sl_price, tp_price)
   pad = max((y_max - y_min) * 0.08, 1.0)
@@ -514,6 +528,89 @@ def compute_stock_factors(group: pd.DataFrame) -> pd.DataFrame:
   return g
 
 
+def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
+  df_out = df_in.copy()
+  cfg_theme_map = config.get("theme_map", {})
+  merged_theme_map = {**DEFAULT_THEME_MAP, **{str(k).upper(): str(v) for k, v in cfg_theme_map.items()}}
+
+  if "Theme" not in df_out.columns:
+    df_out["Theme"] = df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+  else:
+    df_out["Theme"] = df_out["Theme"].fillna(
+        df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+    )
+
+  if "Ret_5d" in df_out.columns:
+    df_out["Theme_Ret_5d"] = df_out.groupby(["Date", "Theme"])["Ret_5d"].transform("mean")
+  else:
+    df_out["Theme_Ret_5d"] = 0.0
+
+  if "Ret_20d" in df_out.columns:
+    df_out["Theme_Ret_20d"] = df_out.groupby(["Date", "Theme"])["Ret_20d"].transform("mean")
+  else:
+    df_out["Theme_Ret_20d"] = 0.0
+
+  if "Dist_MA20" in df_out.columns:
+    df_out["Theme_Dist_MA20"] = df_out.groupby(["Date", "Theme"])["Dist_MA20"].transform("mean")
+  else:
+    df_out["Theme_Dist_MA20"] = 0.0
+
+  df_out["Theme_Ret_5d_Zscore"] = df_out.groupby("Date")["Theme_Ret_5d"].transform(
+      lambda x: (x - x.mean()) / (x.std() + 1e-8)
+  )
+  df_out["Rel_Strength_Theme_5d"] = df_out["Ret_5d"] - df_out["Theme_Ret_5d"]
+  return df_out
+
+
+def build_feature_matrix(df_sub: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+  mat = pd.DataFrame(index=df_sub.index)
+  for col in feature_cols:
+    if col in df_sub.columns:
+      mat[col] = pd.to_numeric(df_sub[col], errors="coerce").fillna(0.0)
+    else:
+      mat[col] = 0.0
+  return mat
+
+
+def score_candidates(df_sub: pd.DataFrame, config: dict, feature_cols: list[str]) -> pd.DataFrame:
+  scored = df_sub.copy()
+  baseline_rate = float(config.get("baseline_tp_rate", 0.35))
+  boost_weight = float(config.get("boost_weight", 8.0))
+  theme_roll_rates = config.get("theme_roll_tp_rates", {})
+
+  scored["Theme_Roll_TP_Rate"] = (
+      scored["Theme"].map(theme_roll_rates).fillna(baseline_rate).astype(float)
+  )
+  scored["Theme_Boost"] = (scored["Theme_Roll_TP_Rate"] - baseline_rate) * boost_weight
+
+  x_mat = build_feature_matrix(scored, feature_cols)
+  scored["Pred_Score"] = np.asarray(ranker_lgb.predict(x_mat), dtype=float)
+  scored["Adjusted_Pred_Score"] = scored["Pred_Score"] + scored["Theme_Boost"]
+
+  cls_raw = np.asarray(classifier_lgb.predict(x_mat), dtype=float)
+  if cls_raw.ndim == 2:
+    scored["TP_Hit_Prob"] = np.clip(cls_raw[:, -1], 0.0, 1.0)
+  else:
+    scored["TP_Hit_Prob"] = np.clip(cls_raw, 0.0, 1.0)
+
+  scored["Predicted_TP"] = np.asarray(tp_regressor.predict(x_mat), dtype=float)
+  return scored
+
+
+def compute_trade_levels(entry_price: float, atr_pct: float, predicted_tp: float, config: dict):
+  max_sl_limit = float(config.get("max_sl_limit", -8.0))
+  min_tp_rr = float(config.get("min_tp_rr", 1.5))
+
+  atr_pct_val = float(atr_pct) * 100.0
+  sl_pct = max(-(atr_pct_val * 1.5), max_sl_limit)
+  min_required_tp = abs(sl_pct) * min_tp_rr
+  tp_pct = max(float(predicted_tp), min_required_tp)
+
+  sl_price = entry_price * (1.0 + sl_pct / 100.0)
+  tp_price = entry_price * (1.0 + tp_pct / 100.0)
+  return sl_price, sl_pct, tp_price, tp_pct
+
+
 # 모델 로드 실패 시 에러 안내 문구 출력
 if load_error is not None:
   st.error(
@@ -521,13 +618,18 @@ if load_error is not None:
       f" 폴더 상태를 확인해주세요.\n\n**에러 내용:** {load_error}"
   )
 else:
-  HOLDING_PERIOD = MODEL_CONFIG["holding_period"]
-  UNIVERSE_TICKERS = [t.upper() for t in MODEL_CONFIG["universe_tickers"]]
+  HOLDING_PERIOD = int(MODEL_CONFIG.get("holding_period", 7))
+  TOP_N_PERCENT = float(MODEL_CONFIG.get("top_n_percent", 20.0))
+  MIN_TP_HIT_PROB = float(MODEL_CONFIG.get("min_tp_hit_prob", 0.30))
+  BOOST_WEIGHT = float(MODEL_CONFIG.get("boost_weight", 8.0))
+  LOOKBACK_DAYS = int(MODEL_CONFIG.get("lookback_days", 40))
+  UNIVERSE_TICKERS = [t.upper() for t in MODEL_CONFIG.get("universe_tickers", [])]
 
+  base_numeric_cols = [c for c in FEATURE_COLS if c not in {
+      "Theme_Ret_5d", "Theme_Ret_20d", "Theme_Dist_MA20",
+      "Theme_Ret_5d_Zscore", "Rel_Strength_Theme_5d",
+  }]
 
-  # -------------------------------------------------------------
-  # 코랩 셀 1 & 셀 2 전체 데이터프레임 전처리 및 피처 연산 파이프라인
-  # -------------------------------------------------------------
   @st.cache_data(ttl=3600)
   def fetch_and_process_universe_data():
     download_list = list(set(UNIVERSE_TICKERS + ["^VIX", "SPY"]))
@@ -591,18 +693,17 @@ else:
         df_all, spy_df[["Date", "SPY_Ret_5d"]], on="Date", how="inner"
     )
     df_all["Rel_Strength_5d"] = df_all["Ret_5d"] - df_all["SPY_Ret_5d"]
-
     df_all["Ret_5d_Zscore"] = df_all.groupby("Date")["Ret_5d"].transform(
         lambda x: (x - x.mean()) / (x.std() + 1e-8)
     )
+    df_all = attach_theme_features(df_all, MODEL_CONFIG)
 
-    for col in FEATURE_COLS:
-      if col in df_all.columns:
-        df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+    req_cols = [c for c in base_numeric_cols if c in df_all.columns]
+    for col in req_cols:
+      df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
 
-    df_clean = df_all.dropna(subset=FEATURE_COLS).reset_index(drop=True)
+    df_clean = df_all.dropna(subset=req_cols).reset_index(drop=True)
     return df_clean
-
 
   @st.cache_data(ttl=3600)
   def fetch_single_ticker_with_market(ticker_upper: str):
@@ -680,119 +781,115 @@ else:
     g = pd.merge(g, spy_df[["Date", "SPY_Ret_5d"]], on="Date", how="inner")
     g["Rel_Strength_5d"] = g["Ret_5d"] - g["SPY_Ret_5d"]
     g["Ret_5d_Zscore"] = 0.0
+    g = attach_theme_features(g, MODEL_CONFIG)
 
-    for col in FEATURE_COLS:
-      if col in g.columns:
-        g[col] = pd.to_numeric(g[col], errors="coerce")
+    req_cols = [c for c in base_numeric_cols if c in g.columns]
+    for col in req_cols:
+      g[col] = pd.to_numeric(g[col], errors="coerce")
 
-    g = g.dropna(subset=FEATURE_COLS).reset_index(drop=True)
+    g = g.dropna(subset=req_cols).reset_index(drop=True)
     return g, raw_norm, False
-
 
   # -------------------------------------------------------------
   # 1. 당일 종목 추천 (스캐너)
   # -------------------------------------------------------------
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header(
-        f"🔥 당일 기준 정예 챔피언 스캐너 ({HOLDING_PERIOD}거래일 스윙 기준)"
+        f"🔥 당일 기준 스윙 추천 스캐너 ({HOLDING_PERIOD}거래일 보유 / "
+        f"Top {TOP_N_PERCENT:.0f}% & 익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}%)"
     )
-    st.write(
-        "코랩 셀 1·2의 전처리 파이프라인과 100% 동일한 데이터 및 피처 기준으로"
-        " 스캔합니다."
+    st.caption(
+        f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
+        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목"
     )
 
     df_display = None
     scan_timestamp = None
     run_time_kst = now_kst_str()
-    top10_cutoff_score = None
+    top_cutoff_score = None
     avg_filtered_score = None
     avg_universe_score = None
 
     with st.spinner(
-        "코랩 전처리 파이프라인 가동 중 (전체 벌크 다운로드 및 팩터 연산)..."
+        "유니버스 시세·테마 팩터 연산 및 3중 앙상블 추론 중..."
     ):
       try:
         df_clean = fetch_and_process_universe_data()
 
         if not df_clean.empty:
           latest_date = df_clean["Date"].max()
-          scan_timestamp = f"{pd.to_datetime(latest_date).strftime('%Y-%m-%d')} (조회 시각: {run_time_kst})"
+          scan_timestamp = (
+              f"{pd.to_datetime(latest_date).strftime('%Y-%m-%d')} "
+              f"(조회 시각: {run_time_kst})"
+          )
 
-          MAX_DAILY_ATR_PCT = 0.045
-          latest_subset = df_clean[
-              (df_clean["Date"] == latest_date)
-              & (df_clean["ATR_Pct"] <= MAX_DAILY_ATR_PCT)
-          ].copy()
+          latest_subset = df_clean[df_clean["Date"] == latest_date].copy()
 
-          if (
-              len(latest_subset) > 0
-              and latest_subset[FEATURE_COLS].notna().all().all()
-          ):
-            x_matrix = latest_subset[FEATURE_COLS].apply(
-                pd.to_numeric, errors="coerce"
+          if not latest_subset.empty:
+            scored_latest = score_candidates(
+                latest_subset, MODEL_CONFIG, FEATURE_COLS
             )
-
-            latest_subset["Pred_Score"] = ranker_lgb.predict(x_matrix)
-            latest_subset["Survive_Prob"] = classifier_lgb.predict(x_matrix)
-            latest_subset["Predicted_TP"] = tp_regressor.predict(x_matrix)
-
-            group_sorted = latest_subset.sort_values(
-                by="Pred_Score", ascending=False
+            group_sorted = scored_latest.sort_values(
+                by="Adjusted_Pred_Score", ascending=False
             ).reset_index(drop=True)
-            top_k = max(1, int(len(group_sorted) * 0.10))
-            top10_cutoff_score = float(
-                group_sorted.iloc[top_k - 1]["Pred_Score"]
+
+            top_k = max(1, int(len(group_sorted) * (TOP_N_PERCENT / 100.0)))
+            top_cutoff_score = float(
+                group_sorted.iloc[top_k - 1]["Adjusted_Pred_Score"]
             )
-            avg_universe_score = float(group_sorted["Pred_Score"].mean())
+            avg_universe_score = float(
+                group_sorted["Adjusted_Pred_Score"].mean()
+            )
 
             top_candidates = group_sorted.head(top_k)
-
-            MIN_SURVIVE_PROB_COLAB = 0.58
             filtered_latest = top_candidates[
-                top_candidates["Survive_Prob"] >= MIN_SURVIVE_PROB_COLAB
+                top_candidates["TP_Hit_Prob"] >= MIN_TP_HIT_PROB
             ].reset_index(drop=True)
 
             if len(filtered_latest) > 0:
-              avg_filtered_score = float(filtered_latest["Pred_Score"].mean())
-              MAX_SL_LIMIT = -8.0
+              avg_filtered_score = float(
+                  filtered_latest["Adjusted_Pred_Score"].mean()
+              )
               display_results = []
 
               for idx, row in filtered_latest.iterrows():
                 rank_num = idx + 1
                 entry_price = float(row["Close"])
-                atr_val = float(row["ATR_Pct"]) * 100
-                pred_score_val = float(row["Pred_Score"])
-
-                sl_pct = max(-(atr_val * 1.5), MAX_SL_LIMIT)
-                model_pred_tp = float(row["Predicted_TP"])
-                min_required_tp = abs(sl_pct) * 1.5
-                tp_pct = max(model_pred_tp, min_required_tp)
-
-                sl_price = entry_price * (1 + sl_pct / 100.0)
-                tp_price = entry_price * (1 + tp_pct / 100.0)
-                surv_prob_val = float(row["Survive_Prob"] * 100)
+                sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
+                    entry_price,
+                    float(row["ATR_Pct"]),
+                    float(row["Predicted_TP"]),
+                    MODEL_CONFIG,
+                )
+                tp_prob_pct = float(row["TP_Hit_Prob"]) * 100.0
+                adj_score_val = float(row["Adjusted_Pred_Score"])
+                boost_val = float(row["Theme_Boost"])
+                theme_val = str(row.get("Theme", "-"))
 
                 display_results.append({
                     "순위": rank_num,
                     "Ticker": row["Ticker"],
-                    "종목 점수": round(pred_score_val, 4),
+                    "Theme": theme_val,
+                    "조정 점수": round(adj_score_val, 4),
+                    "테마가산점": f"{boost_val:+.3f}",
                     "진입가($)": round(entry_price, 2),
                     "손절가($)": round(sl_price, 2),
-                    "조정 손절폭(%)": f"{sl_pct:.2f} %",
-                    "동적익절가($)": round(tp_price, 2),
-                    "동적 익절폭(%)": f"+{tp_pct:.2f} %",
-                    "생존확률": f"{surv_prob_val:.1f} %",
+                    "손절폭(%)": f"{sl_pct:.2f}%",
+                    "익절가($)": round(tp_price, 2),
+                    "익절폭(%)": f"+{tp_pct:.2f}%",
+                    "익절선달성률": f"{tp_prob_pct:.1f}%",
                 })
 
               df_display = pd.DataFrame(display_results)
               st.success(
-                  "✨ 코랩 전처리 로직과 완벽히 일치하는 정예 챔피언 선별"
-                  " 완료!"
+                  f"✨ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
+                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상) 충족 종목 {len(df_display)}개 선별 완료!"
               )
             else:
               st.warning(
-                  "⚠️ 조건(상위 10% 랭킹, 생존율 58% 이상)을 통과한 종목이"
-                  " 없습니다."
+                  f"⚠️ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
+                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상)을 충족하는 종목이"
+                  " 없습니다. (관망)"
               )
               df_display = pd.DataFrame()
           else:
@@ -827,10 +924,10 @@ else:
             box_html = (
                 '<div class="pick-box">'
                 '<div class="pick-header">'
-                f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]}</div>'
+                f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]} <span style="font-size:13px; color:#9AA4B2;">[{r["Theme"]}]</span></div>'
                 '<div class="pick-badges">'
-                f'<div class="pick-score">종목 점수 {r["종목 점수"]:.4f}</div>'
-                f'<div class="pick-surv">생존확률 {r["생존확률"]}</div>'
+                f'<div class="pick-score">조정점수 {r["조정 점수"]:.4f} ({r["테마가산점"]})</div>'
+                f'<div class="pick-surv">익절선달성률 {r["익절선달성률"]}</div>'
                 "</div>"
                 "</div>"
                 '<div class="pick-grid">'
@@ -839,12 +936,12 @@ else:
                 f'<div class="pick-item-val">${r["진입가($)"]:.2f}</div>'
                 "</div>"
                 '<div class="pick-item">'
-                '<div class="pick-item-label">손절가 / 조정 손절폭</div>'
-                f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["조정 손절폭(%)"].strip()})</span></div>'
+                '<div class="pick-item-label">손절가 / 손절폭</div>'
+                f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["손절폭(%)"].strip()})</span></div>'
                 "</div>"
                 '<div class="pick-item">'
-                '<div class="pick-item-label">동적익절가 / 동적 익절폭</div>'
-                f'<div class="pick-item-val">${r["동적익절가($)"]:.2f}<span class="pick-tp">({r["동적 익절폭(%)"].strip()})</span></div>'
+                '<div class="pick-item-label">익절가 / 익절폭</div>'
+                f'<div class="pick-item-val">${r["익절가($)"]:.2f}<span class="pick-tp">({r["익절폭(%)"].strip()})</span></div>'
                 "</div>"
                 "</div>"
                 "</div>"
@@ -855,8 +952,8 @@ else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
       cutoff_str = (
-          f"{top10_cutoff_score:.4f}"
-          if top10_cutoff_score is not None
+          f"{top_cutoff_score:.4f}"
+          if top_cutoff_score is not None
           else "-"
       )
       avg_rec_str = (
@@ -873,19 +970,19 @@ else:
       summary_cards_html = (
           '<div class="metric-container">'
           '<div class="metric-card">'
-          '<div class="metric-title">상위 10% 종목 점수 (커트라인)</div>'
+          f'<div class="metric-title">상위 {TOP_N_PERCENT:.0f}% 조정 점수 (커트라인)</div>'
           f'<div class="metric-value" style="color:#38BDF8;">{cutoff_str}</div>'
-          '<div class="metric-sub" style="color:#AAAAAA;">당일 변동성 필터 통과군 상위 10% 경계</div>'
+          f'<div class="metric-sub" style="color:#AAAAAA;">당일 전체 대상 상위 {TOP_N_PERCENT:.0f}% 경계</div>'
           "</div>"
           '<div class="metric-card">'
-          '<div class="metric-title">추천 종목 평균 종목 점수</div>'
+          '<div class="metric-title">추천 종목 평균 조정 점수</div>'
           f'<div class="metric-value" style="color:#00FF7F;">{avg_rec_str}</div>'
           '<div class="metric-sub" style="color:#AAAAAA;">최종 선별 추천 종목 평균</div>'
           "</div>"
           '<div class="metric-card">'
-          '<div class="metric-title">전체 대상 평균 종목 점수</div>'
+          '<div class="metric-title">전체 대상 평균 조정 점수</div>'
           f'<div class="metric-value">{avg_univ_str}</div>'
-          '<div class="metric-sub" style="color:#AAAAAA;">당일 변동성 필터 통과 전체 종목 평균</div>'
+          '<div class="metric-sub" style="color:#AAAAAA;">당일 전체 대상 종목 평균</div>'
           "</div>"
           "</div>"
       )
@@ -897,7 +994,7 @@ else:
   elif menu == "🔍 특정 종목 당일 분석":
     st.header(f"🔍 특정 종목 당일 딥다이브 분석 ({HOLDING_PERIOD}거래일 기준)")
     target_ticker_raw = st.text_input(
-        "분석할 티커 입력 (대소문자 무관, 유니버스 외 종목도 지원)", "TSM"
+        "분석할 티커 입력 (대소문자 무관, 유니버스 외 종목도 지원)", "NVDA"
     )
     target_ticker = target_ticker_raw.strip().upper()
 
@@ -923,97 +1020,91 @@ else:
                   if in_universe
                   else "yfinance 개별 다운로드 + VIX/SPY 결합 데이터"
               )
-              latest = t_df.iloc[[-1]]
-              x_val = latest[FEATURE_COLS].apply(
-                  pd.to_numeric, errors="coerce"
+              latest_scored = score_candidates(
+                  t_df.iloc[[-1]], MODEL_CONFIG, FEATURE_COLS
+              )
+              latest = latest_scored.iloc[0]
+
+              adj_score = float(latest["Adjusted_Pred_Score"])
+              boost_val = float(latest["Theme_Boost"])
+              theme_val = str(latest.get("Theme", "-"))
+              tp_prob_pct = float(latest["TP_Hit_Prob"]) * 100.0
+              pred_tp = float(latest["Predicted_TP"])
+              close_p = float(latest["Close"])
+
+              sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
+                  close_p, float(latest["ATR_Pct"]), pred_tp, MODEL_CONFIG
               )
 
-              score = float(ranker_lgb.predict(x_val)[0])
-              surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-              pred_tp = float(tp_regressor.predict(x_val)[0])
-              close_p = float(latest["Close"].values[0])
-              atr_val = float(latest["ATR_Pct"].values[0]) * 100
-
-              sl_pct = max(-(atr_val * 1.5), -8.0)
-              min_required_tp = abs(sl_pct) * 1.5
-              tp_pct = max(pred_tp, min_required_tp)
-
-              sl_price = close_p * (1 + sl_pct / 100.0)
-              tp_price = close_p * (1 + tp_pct / 100.0)
-
-              latest_bar_ts = pd.Timestamp(latest["Date"].values[0])
+              latest_bar_ts = pd.Timestamp(latest["Date"])
               latest_bar_date = latest_bar_ts.strftime("%Y-%m-%d")
               proj_expiry_ts = latest_bar_ts + pd.Timedelta(
                   days=int(HOLDING_PERIOD * 1.45)
               )
 
-              surv_passed = surv_prob >= 58.0
-              atr_passed = atr_val <= 4.5
-
+              prob_passed = float(latest["TP_Hit_Prob"]) >= MIN_TP_HIT_PROB
               rank_status_text = "비교군 없음"
               rank_status_class = "status-warn"
+              in_top_pct = False
 
               df_univ = fetch_and_process_universe_data()
               if not df_univ.empty:
-                day_sub = df_univ[
-                    (df_univ["Date"] == latest_bar_ts)
-                    & (df_univ["ATR_Pct"] <= 0.045)
-                ].copy()
+                day_sub = df_univ[df_univ["Date"] == latest_bar_ts].copy()
                 if not day_sub.empty:
-                  x_day = day_sub[FEATURE_COLS].apply(
-                      pd.to_numeric, errors="coerce"
-                  )
-                  day_sub["Pred_Score"] = ranker_lgb.predict(x_day)
-                  day_sorted = day_sub.sort_values(
-                      by="Pred_Score", ascending=False
+                  day_scored = score_candidates(
+                      day_sub, MODEL_CONFIG, FEATURE_COLS
+                  ).sort_values(
+                      by="Adjusted_Pred_Score", ascending=False
                   ).reset_index(drop=True)
-                  top_k = max(1, int(len(day_sorted) * 0.10))
-                  top_tickers = set(day_sorted.head(top_k)["Ticker"].str.upper())
+                  top_k = max(1, int(len(day_scored) * (TOP_N_PERCENT / 100.0)))
+                  top_tickers = set(
+                      day_scored.head(top_k)["Ticker"].str.upper()
+                  )
 
-                  matched_pos = day_sorted.index[
-                      day_sorted["Ticker"].str.upper() == target_ticker
+                  matched_pos = day_scored.index[
+                      day_scored["Ticker"].str.upper() == target_ticker
                   ].tolist()
                   if matched_pos:
                     cur_rank = matched_pos[0] + 1
-                    total_cnt = len(day_sorted)
+                    total_cnt = len(day_scored)
                     if target_ticker in top_tickers:
+                      in_top_pct = True
                       rank_status_text = (
-                          f"상위 10% 충족 ✅ ({cur_rank}/{total_cnt}위)"
+                          f"상위 {TOP_N_PERCENT:.0f}% 충족 ✅"
+                          f" ({cur_rank}/{total_cnt}위)"
                       )
                       rank_status_class = "status-pass"
                     else:
                       rank_status_text = (
-                          f"상위 10% 미달 ❌ ({cur_rank}/{total_cnt}위)"
+                          f"상위 {TOP_N_PERCENT:.0f}% 미달 ❌"
+                          f" ({cur_rank}/{total_cnt}위)"
                       )
                       rank_status_class = "status-fail"
                   else:
                     cutoff_score = float(
-                        day_sorted.iloc[top_k - 1]["Pred_Score"]
+                        day_scored.iloc[top_k - 1]["Adjusted_Pred_Score"]
                     )
-                    if score >= cutoff_score:
-                      rank_status_text = "상위 10% 선 충족 ✅ (유니버스 외)"
+                    if adj_score >= cutoff_score:
+                      in_top_pct = True
+                      rank_status_text = (
+                          f"상위 {TOP_N_PERCENT:.0f}% 선 충족 ✅ (유니버스 외)"
+                      )
                       rank_status_class = "status-pass"
                     else:
-                      rank_status_text = "상위 10% 미달 ❌ (유니버스 외)"
+                      rank_status_text = (
+                          f"상위 {TOP_N_PERCENT:.0f}% 미달 ❌ (유니버스 외)"
+                      )
                       rank_status_class = "status-fail"
 
-              surv_status_text = (
-                  "기준 충족 ✅ (≥ 58.0%)"
-                  if surv_passed
-                  else "기준 미달 ❌ (< 58.0%)"
+              prob_status_text = (
+                  f"기준 충족 ✅ (≥ {MIN_TP_HIT_PROB*100:.0f}%)"
+                  if prob_passed
+                  else f"기준 미달 ❌ (< {MIN_TP_HIT_PROB*100:.0f}%)"
               )
-              surv_status_class = "status-pass" if surv_passed else "status-fail"
+              prob_status_class = "status-pass" if prob_passed else "status-fail"
+              buy_recommended = prob_passed and in_top_pct
 
-              atr_status_text = (
-                  "기준 충족 ✅ (≤ 4.50%)"
-                  if atr_passed
-                  else "기준 미달 ❌ (> 4.50%)"
-              )
-              atr_status_class = "status-pass" if atr_passed else "status-fail"
-
-              buy_recommended = surv_passed and atr_passed
-
-              st.subheader(f"📊 {target_ticker} 분석 리포트")
+              st.subheader(f"📊 {target_ticker} [{theme_val}] 분석 리포트")
               st.caption(
                   f"데이터 기준일: {latest_bar_date} | 분석 시각:"
                   f" {now_kst_str()} | 소스: {source_label}"
@@ -1021,16 +1112,21 @@ else:
 
               if buy_recommended:
                 st.success(
-                    f"✅ **매수 권장:** [{target_ticker}] 생존 확률"
-                    f" ({surv_prob:.1f}% ≥ 58.0%) 및 일일 ATR 변동성"
-                    f" ({atr_val:.2f}% ≤ 4.50%) 기준을 충족합니다."
+                    f"✅ **매수 권장:** [{target_ticker}] 익절선달성률"
+                    f" ({tp_prob_pct:.1f}% ≥ {MIN_TP_HIT_PROB*100:.0f}%) 및"
+                    f" 랭킹 상위 {TOP_N_PERCENT:.0f}% 기준을 충족합니다."
                 )
               else:
                 failed_reasons = []
-                if not surv_passed:
-                  failed_reasons.append(f"생존 확률 {surv_prob:.1f}% (< 58.0%)")
-                if not atr_passed:
-                  failed_reasons.append(f"일일 ATR {atr_val:.2f}% (> 4.50%)")
+                if not prob_passed:
+                  failed_reasons.append(
+                      f"익절선달성률 {tp_prob_pct:.1f}% (<"
+                      f" {MIN_TP_HIT_PROB*100:.0f}%)"
+                  )
+                if not in_top_pct:
+                  failed_reasons.append(
+                      f"상위 {TOP_N_PERCENT:.0f}% 랭킹 미달"
+                  )
                 reason_str = ", ".join(failed_reasons)
                 st.warning(
                     f"⛔ **매수 비권장 (관망 권장):** [{target_ticker}] 진입"
@@ -1045,31 +1141,30 @@ else:
               )
 
               st.markdown(METRIC_CSS, unsafe_allow_html=True)
-
               rec_label = "매수 권장 ✅" if buy_recommended else "관망 권장 ⛔"
               rec_class = "status-pass" if buy_recommended else "status-fail"
 
               filter_cards_html = (
                   '<div class="metric-container">'
                   '<div class="metric-card">'
-                  '<div class="metric-title">손절 생존 확률</div>'
-                  f'<div class="metric-value">{surv_prob:.1f}%</div>'
-                  f'<div class="metric-sub {surv_status_class}">{surv_status_text}</div>'
+                  '<div class="metric-title">목표 익절선달성률</div>'
+                  f'<div class="metric-value">{tp_prob_pct:.1f}%</div>'
+                  f'<div class="metric-sub {prob_status_class}">{prob_status_text}</div>'
                   "</div>"
                   '<div class="metric-card">'
-                  '<div class="metric-title">일일 ATR 변동성</div>'
-                  f'<div class="metric-value">{atr_val:.2f}%</div>'
-                  f'<div class="metric-sub {atr_status_class}">{atr_status_text}</div>'
+                  '<div class="metric-title">조정 랭킹 점수</div>'
+                  f'<div class="metric-value">{adj_score:.4f}</div>'
+                  f'<div class="metric-sub" style="color:#38BDF8;">테마가산점 {boost_val:+.3f}</div>'
                   "</div>"
                   '<div class="metric-card">'
-                  '<div class="metric-title">종목 점수 (랭킹)</div>'
-                  f'<div class="metric-value">{score:.4f}</div>'
+                  f'<div class="metric-title">상위 {TOP_N_PERCENT:.0f}% 랭킹 여부</div>'
+                  f'<div class="metric-value" style="font-size:16px;">{theme_val}</div>'
                   f'<div class="metric-sub {rank_status_class}">{rank_status_text}</div>'
                   "</div>"
                   '<div class="metric-card">'
                   '<div class="metric-title">매수 권장 여부</div>'
                   f'<div class="metric-value {rec_class}">{rec_label}</div>'
-                  f'<div class="metric-sub" style="color:#AAAAAA;">생존≥58% &amp; ATR≤4.5%</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">Top {TOP_N_PERCENT:.0f}% &amp; 확률≥{MIN_TP_HIT_PROB*100:.0f}%</div>'
                   "</div>"
                   "</div>"
               )
@@ -1083,7 +1178,7 @@ else:
                   f' style="font-size:14px; color:#FF6B6B;">({sl_pct:.2f}%)</span></div>'
                   "</div>"
                   '<div class="metric-card">'
-                  '<div class="metric-title">예상 동적익절가</div>'
+                  '<div class="metric-title">예상 익절가</div>'
                   f'<div class="metric-value">${tp_price:.2f} <span'
                   f' style="font-size:14px; color:#4ECDC4;">(+{tp_pct:.2f}%)</span></div>'
                   "</div>"
@@ -1127,7 +1222,7 @@ else:
     )
     target_ticker_raw = st.text_input(
         "분석할 티커 입력 (대소문자 무관, 유니버스 외 종목도 지원)",
-        "TSM",
+        "NVDA",
         key="past_ticker",
     )
     target_ticker = target_ticker_raw.strip().upper()
@@ -1161,30 +1256,23 @@ else:
               match_row = df_t[df_t["DateOnly"] == target_date]
 
               if not match_row.empty:
-                row = match_row.iloc[0]
-                x_val = (
-                    row[FEATURE_COLS]
-                    .to_frame()
-                    .T.apply(pd.to_numeric, errors="coerce")
+                scored_row = score_candidates(
+                    match_row.iloc[[-1]], MODEL_CONFIG, FEATURE_COLS
                 )
+                row = scored_row.iloc[0]
 
-                score = float(ranker_lgb.predict(x_val)[0])
-                surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-                pred_tp = float(tp_regressor.predict(x_val)[0])
+                adj_score = float(row["Adjusted_Pred_Score"])
+                boost_val = float(row["Theme_Boost"])
+                theme_val = str(row.get("Theme", "-"))
+                tp_prob_pct = float(row["TP_Hit_Prob"]) * 100.0
+                pred_tp = float(row["Predicted_TP"])
                 close_p = float(row["Close"])
 
-                atr_val = float(row["ATR_Pct"]) * 100
-                atr_limit_passed = atr_val <= 4.5
+                sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
+                    close_p, float(row["ATR_Pct"]), pred_tp, MODEL_CONFIG
+                )
 
-                sl_pct = max(-(atr_val * 1.5), -8.0)
-                min_required_tp = abs(sl_pct) * 1.5
-                tp_pct = max(pred_tp, min_required_tp)
-
-                sl_price = close_p * (1 + sl_pct / 100.0)
-                tp_price = close_p * (1 + tp_pct / 100.0)
-
-                surv_passed = surv_prob >= 58.0
-                is_champion = surv_passed and atr_limit_passed
+                prob_passed = float(row["TP_Hit_Prob"]) >= MIN_TP_HIT_PROB
 
                 if full_t_df is None or full_t_df.empty:
                   full_t_df = df_t.copy()
@@ -1222,7 +1310,7 @@ else:
                       f"성공 🎯 ({high_n:.2f} 도달)" if tp_reached else "미달 ❌"
                   )
                   sl_str = (
-                      f"위험 ⚠️ (터치 발생)"
+                      "위험 ⚠️ (터치 발생)"
                       if sl_touched
                       else "안전 ✅ (터치 없음)"
                   )
@@ -1236,20 +1324,24 @@ else:
                   tp_str, sl_str = "데이터 부족", "데이터 부족"
 
                 st.subheader(
-                    f"📊 {target_ticker} - {target_date} 기준"
+                    f"📊 {target_ticker} [{theme_val}] - {target_date} 기준"
                     f" {HOLDING_PERIOD}일 검증 리포트"
                 )
                 st.caption(
                     f"검증 실행 시각: {now_kst_str()} | 소스: {source_label}"
                 )
 
-                if is_champion:
+                if prob_passed:
                   st.success(
-                      f"✨ **[{target_ticker}] 매수 진입 적격 챔피언 시그널"
-                      " 발생!** (손절 생존 확률 >= 58% 및 변동성 기준 충족)"
+                      f"✨ **[{target_ticker}] 익절선달성률 기준"
+                      f" ({tp_prob_pct:.1f}% ≥ {MIN_TP_HIT_PROB*100:.0f}%)"
+                      " 충족!**"
                   )
                 else:
-                  st.warning(f"⚠️ **[{target_ticker}] 조건 미달 (관망 권장)**")
+                  st.warning(
+                      f"⚠️ **[{target_ticker}] 익절선달성률 기준 미달"
+                      f" ({tp_prob_pct:.1f}% < {MIN_TP_HIT_PROB*100:.0f}%)**"
+                  )
 
                 st.markdown(METRIC_CSS, unsafe_allow_html=True)
                 card_html_1 = (
@@ -1259,16 +1351,18 @@ else:
                     f'<div class="metric-value">${close_p:.2f}</div>'
                     "</div>"
                     '<div class="metric-card">'
-                    '<div class="metric-title">모델 랭킹 점수</div>'
-                    f'<div class="metric-value">{score:.4f}</div>'
+                    '<div class="metric-title">조정 랭킹 점수</div>'
+                    f'<div class="metric-value">{adj_score:.4f}</div>'
+                    f'<div class="metric-sub" style="color:#38BDF8;">테마가산점 {boost_val:+.3f}</div>'
                     "</div>"
                     '<div class="metric-card">'
-                    '<div class="metric-title">손절 생존 확률</div>'
-                    f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                    '<div class="metric-title">목표 익절선달성률</div>'
+                    f'<div class="metric-value">{tp_prob_pct:.1f}%</div>'
+                    f'<div class="metric-sub" style="color:#AAAAAA;">기준 {MIN_TP_HIT_PROB*100:.0f}% 이상</div>'
                     "</div>"
                     '<div class="metric-card">'
-                    '<div class="metric-title">일일 ATR 변동성</div>'
-                    f'<div class="metric-value">{atr_val:.2f}%</div>'
+                    '<div class="metric-title">예상 목표익절폭</div>'
+                    f'<div class="metric-value" style="color:#4ECDC4;">+{pred_tp:.2f}%</div>'
                     "</div>"
                     "</div>"
                 )
@@ -1363,7 +1457,7 @@ else:
     col1, col2, col3 = st.columns(3)
     with col1:
       pos_ticker_raw = st.text_input(
-          "보유 종목 티커 (대소문자 무관)", "AAPL", key="pos_ticker"
+          "보유 종목 티커 (대소문자 무관)", "NVDA", key="pos_ticker"
       )
       pos_ticker = pos_ticker_raw.strip().upper()
     with col2:
@@ -1373,7 +1467,7 @@ else:
       )
     with col3:
       pos_price = st.number_input(
-          "매수가격 ($)", value=300.0, step=1.0, key="pos_price"
+          "매수가격 ($)", value=140.0, step=1.0, key="pos_price"
       )
 
     if st.button("포지션 진단 실행"):
@@ -1399,43 +1493,36 @@ else:
                   if in_universe
                   else "yfinance 개별 다운로드 + VIX/SPY 결합 데이터"
               )
-              latest_row = t_df.iloc[[-1]]
-              curr_price = float(latest_row["Close"].values[0])
-              holding_return = (curr_price - pos_price) / pos_price * 100
-
-              x_val = latest_row[FEATURE_COLS].apply(
-                  pd.to_numeric, errors="coerce"
+              latest_scored = score_candidates(
+                  t_df.iloc[[-1]], MODEL_CONFIG, FEATURE_COLS
               )
-              score = float(ranker_lgb.predict(x_val)[0])
-              surv_prob = float(classifier_lgb.predict(x_val)[0] * 100)
-              pred_tp = float(tp_regressor.predict(x_val)[0])
-              atr_val = float(latest_row["ATR_Pct"].values[0]) * 100
+              latest_row = latest_scored.iloc[0]
 
-              is_valid_atr = atr_val <= 4.5
-              sl_pct = max(-(atr_val * 1.5), -8.0)
-              min_required_tp = abs(sl_pct) * 1.5
-              tp_pct = max(pred_tp, min_required_tp)
+              curr_price = float(latest_row["Close"])
+              holding_return = (curr_price - pos_price) / pos_price * 100.0
+              tp_prob_pct = float(latest_row["TP_Hit_Prob"]) * 100.0
+              pred_tp = float(latest_row["Predicted_TP"])
+              theme_val = str(latest_row.get("Theme", "-"))
 
-              sl_price = curr_price * (1 + sl_pct / 100.0)
-              tp_price = curr_price * (1 + tp_pct / 100.0)
-              passed_survive = surv_prob >= 58.0
+              sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
+                  curr_price, float(latest_row["ATR_Pct"]), pred_tp, MODEL_CONFIG
+              )
+              passed_prob = float(latest_row["TP_Hit_Prob"]) >= MIN_TP_HIT_PROB
 
-              if not is_valid_atr:
-                action = (
-                    "SELL / REDUCE (변동성 위험 - 비중 축소 또는 매도 추천)"
-                )
-              elif surv_prob < 50.0:
-                action = "SELL / EXIT (하방 리스크 고조 - 즉시 매도 권장)"
-              elif holding_return <= sl_pct:
+              if holding_return <= sl_pct:
                 action = "STOP LOSS (손절가 이탈 - 즉시 손절 실행)"
               elif holding_return >= tp_pct:
                 action = "TAKE PROFIT (목표 익절가 달성 - 수익 실현 권장)"
-              elif passed_survive:
-                action = "HOLD & RIDE (강력 홀딩 - 모멘텀 유지)"
+              elif float(latest_row["TP_Hit_Prob"]) < 0.20:
+                action = "SELL / EXIT (익절선달성률 저하 - 비중 축소 또는 매도 권장)"
+              elif passed_prob:
+                action = "HOLD & RIDE (목표 익절선달성률 양호 - 보유 유지)"
               else:
-                action = "WATCH / CAUTION (중립 관망)"
+                action = "WATCH / CAUTION (중립 관망 - 추세 및 손절라인 모니터링)"
 
-              st.subheader(f"🛡️ [{pos_ticker}] 기존 보유 포지션 진단 리포트")
+              st.subheader(
+                  f"🛡️ [{pos_ticker}] ({theme_val}) 기존 보유 포지션 진단 리포트"
+              )
               st.caption(
                   f"진단 시각: {now_kst_str()} | 매수일: {pos_date} | 소스:"
                   f" {source_label}"
@@ -1457,8 +1544,9 @@ else:
                   f'<div class="metric-value" style="color:{holding_ret_color};">{holding_return:+.2f}%</div>'
                   "</div>"
                   '<div class="metric-card">'
-                  '<div class="metric-title">손절 생존 확률</div>'
-                  f'<div class="metric-value">{surv_prob:.1f}%</div>'
+                  '<div class="metric-title">목표 익절선달성률</div>'
+                  f'<div class="metric-value">{tp_prob_pct:.1f}%</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">기준 {MIN_TP_HIT_PROB*100:.0f}% 이상</div>'
                   "</div>"
                   '<div class="metric-card">'
                   '<div class="metric-title">갱신된 추천 손절/익절</div>'
