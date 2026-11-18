@@ -21,9 +21,14 @@
     "VWAP_Ratio",
     "RSI_14",
     "Ret_5d_Zscore",
+    "Theme_Ret_5d_Zscore",
     "VIX",
     "VIX_Change_1d",
     "VIX_Change_5d",
     "VIX_Pos_20d",
-    "Rel_Strength_5d"
+    "Rel_Strength_5d",
+    "Theme_Ret_5d",
+    "Theme_Ret_20d",
+    "Theme_Dist_MA20",
+    "Rel_Strength_Theme_5d"
 ]
