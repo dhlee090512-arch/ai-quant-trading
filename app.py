@@ -84,19 +84,17 @@ SEED_UNIVERSE_TICKERS = list(DEFAULT_THEME_MAP.keys())
 
 def sync_theme_map_in_config(config: dict, config_path: str) -> dict:
   updated_cfg = dict(config) if isinstance(config, dict) else {}
-  raw_theme_map = updated_cfg.get("theme_map", {})
-  merged_theme_map = dict(DEFAULT_THEME_MAP)
 
+  merged_theme_map: dict[str, str] = {}
+  raw_theme_map = updated_cfg.get("theme_map", {})
   if isinstance(raw_theme_map, dict):
     for k, v in raw_theme_map.items():
       norm_k = str(k).strip().upper()
       if norm_k and v:
         merged_theme_map[norm_k] = str(v)
 
-  had_complete_theme_map = (
-      isinstance(raw_theme_map, dict)
-      and all(tk in {str(k).strip().upper() for k in raw_theme_map.keys()} for tk in SEED_UNIVERSE_TICKERS)
-  )
+  for tk, theme_name in DEFAULT_THEME_MAP.items():
+    merged_theme_map[tk] = theme_name
 
   updated_cfg["theme_map"] = merged_theme_map
 
@@ -109,26 +107,18 @@ def sync_theme_map_in_config(config: dict, config_path: str) -> dict:
       if norm_tk and norm_tk not in seen_univ:
         seen_univ.add(norm_tk)
         norm_universe.append(norm_tk)
-
   for tk in SEED_UNIVERSE_TICKERS:
     if tk not in seen_univ:
       seen_univ.add(tk)
       norm_universe.append(tk)
-
-  had_complete_universe = (
-      isinstance(raw_universe, list)
-      and len(raw_universe) == len(norm_universe)
-      and [str(t).strip().upper() for t in raw_universe] == norm_universe
-  )
   updated_cfg["universe_tickers"] = norm_universe
 
-  if not had_complete_theme_map or not had_complete_universe:
-    try:
-      os.makedirs(os.path.dirname(config_path), exist_ok=True)
-      with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(updated_cfg, f, ensure_ascii=False, indent=2)
-    except Exception:
-      pass
+  try:
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+      json.dump(updated_cfg, f, ensure_ascii=False, indent=2)
+  except Exception:
+    pass
 
   return updated_cfg
 
@@ -257,6 +247,15 @@ METRIC_CSS = """
     border: 1px solid rgba(0, 255, 127, 0.35);
     border-radius: 999px;
     padding: 4px 12px;
+    font-size: 13px;
+    font-weight: 700;
+}
+.pick-atr {
+    background-color: rgba(251, 191, 36, 0.14);
+    color: #FBBF24;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 999px;
+    padding: 4px 10px;
     font-size: 13px;
     font-weight: 700;
 }
@@ -615,11 +614,21 @@ def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
 
   if "Theme" not in df_out.columns:
     df_out["Theme"] = (
-        df_out["Ticker"].astype(str).str.strip().str.upper().map(merged_theme_map).fillna("Defensive")
+        df_out["Ticker"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .map(merged_theme_map)
+        .fillna("Defensive")
     )
   else:
     df_out["Theme"] = df_out["Theme"].fillna(
-        df_out["Ticker"].astype(str).str.strip().str.upper().map(merged_theme_map).fillna("Defensive")
+        df_out["Ticker"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .map(merged_theme_map)
+        .fillna("Defensive")
     )
 
   if "Ret_5d" in df_out.columns:
@@ -717,6 +726,7 @@ else:
   HOLDING_PERIOD = int(MODEL_CONFIG.get("holding_period", 7))
   TOP_N_PERCENT = float(MODEL_CONFIG.get("top_n_percent", 20.0))
   MIN_TP_HIT_PROB = float(MODEL_CONFIG.get("min_tp_hit_prob", 0.30))
+  MAX_ATR_PCT = float(MODEL_CONFIG.get("max_atr_pct", 6.0))
   BOOST_WEIGHT = float(MODEL_CONFIG.get("boost_weight", 8.0))
   LOOKBACK_DAYS = int(MODEL_CONFIG.get("lookback_days", 40))
   UNIVERSE_TICKERS = [
@@ -903,11 +913,13 @@ else:
   if menu == "🔥 당일 종목 추천 (스캐너)":
     st.header(
         f"🔥 당일 기준 스윙 추천 스캐너 ({HOLDING_PERIOD}거래일 보유 / "
-        f"Top {TOP_N_PERCENT:.0f}% & 익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}%)"
+        f"Top {TOP_N_PERCENT:.0f}% · 익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% · "
+        f"ATR < {MAX_ATR_PCT:.1f}%)"
     )
     st.caption(
         f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
-        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 (theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
+        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 "
+        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
     )
 
     df_display = None
@@ -953,6 +965,7 @@ else:
             for r_idx, t_row in group_sorted.head(10).iterrows():
               rank_pos = r_idx + 1
               t_entry = float(t_row["Close"])
+              t_atr_pct = float(t_row["ATR_Pct"]) * 100.0
               t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
                   t_entry,
                   float(t_row["ATR_Pct"]),
@@ -962,9 +975,12 @@ else:
               t_prob_val = float(t_row["TP_Hit_Prob"])
               in_top_k = rank_pos <= top_k
               prob_ok = t_prob_val >= MIN_TP_HIT_PROB
+              atr_ok = t_atr_pct < MAX_ATR_PCT
 
-              if in_top_k and prob_ok:
+              if in_top_k and prob_ok and atr_ok:
                 status_badge = "선별 충족 ✅"
+              elif in_top_k and not atr_ok:
+                status_badge = f"ATR {MAX_ATR_PCT:.1f}% 초과 ❌"
               elif in_top_k and not prob_ok:
                 status_badge = "상위컷 충족·확률 미달 ⚠️"
               else:
@@ -977,6 +993,7 @@ else:
                   "조정 점수": round(float(t_row["Adjusted_Pred_Score"]), 4),
                   "기본 점수": round(float(t_row["Pred_Score"]), 4),
                   "테마가산점": f"{float(t_row['Theme_Boost']):+.3f}",
+                  "ATR(%)": f"{t_atr_pct:.2f}%",
                   "진입가($)": round(t_entry, 2),
                   "손절가($)": round(t_sl_p, 2),
                   "손절폭(%)": f"{t_sl_pct:.2f}%",
@@ -987,9 +1004,14 @@ else:
               })
             df_top10_all = pd.DataFrame(top10_rows)
 
-            top_candidates = group_sorted.head(top_k)
+            top_candidates = group_sorted.head(top_k).copy()
+            top_candidates["ATR_Pct_Val"] = (
+                pd.to_numeric(top_candidates["ATR_Pct"], errors="coerce")
+                * 100.0
+            )
             filtered_latest = top_candidates[
-                top_candidates["TP_Hit_Prob"] >= MIN_TP_HIT_PROB
+                (top_candidates["TP_Hit_Prob"] >= MIN_TP_HIT_PROB)
+                & (top_candidates["ATR_Pct_Val"] < MAX_ATR_PCT)
             ].reset_index(drop=True)
 
             if len(filtered_latest) > 0:
@@ -1001,6 +1023,7 @@ else:
               for idx, row in filtered_latest.iterrows():
                 rank_num = idx + 1
                 entry_price = float(row["Close"])
+                atr_pct_val = float(row["ATR_Pct"]) * 100.0
                 sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
                     entry_price,
                     float(row["ATR_Pct"]),
@@ -1018,6 +1041,7 @@ else:
                     "Theme": theme_val,
                     "조정 점수": round(adj_score_val, 4),
                     "테마가산점": f"{boost_val:+.3f}",
+                    "ATR(%)": f"{atr_pct_val:.2f}%",
                     "진입가($)": round(entry_price, 2),
                     "손절가($)": round(sl_price, 2),
                     "손절폭(%)": f"{sl_pct:.2f}%",
@@ -1029,13 +1053,14 @@ else:
               df_display = pd.DataFrame(display_results)
               st.success(
                   f"✨ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
-                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상) 충족 종목 {len(df_display)}개 선별 완료!"
+                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상, ATR < {MAX_ATR_PCT:.1f}%)"
+                  f" 충족 종목 {len(df_display)}개 선별 완료!"
               )
             else:
               st.warning(
                   f"⚠️ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
-                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상)을 충족하는 종목이"
-                  " 없습니다. (관망)"
+                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상, ATR < {MAX_ATR_PCT:.1f}%)"
+                  "을 충족하는 종목이 없습니다. (관망)"
               )
               df_display = pd.DataFrame()
           else:
@@ -1072,6 +1097,7 @@ else:
                 '<div class="pick-header">'
                 f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]} <span style="font-size:13px; color:#9AA4B2;">[{r["Theme"]}]</span></div>'
                 '<div class="pick-badges">'
+                f'<div class="pick-atr">ATR {r["ATR(%)"]}</div>'
                 f'<div class="pick-score">조정점수 {r["조정 점수"]:.4f} ({r["테마가산점"]})</div>'
                 f'<div class="pick-surv">익절선달성률 {r["익절선달성률"]}</div>'
                 "</div>"
@@ -1139,8 +1165,8 @@ else:
       st.markdown("#### 🏆 당일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
       st.caption(
           f"기준일: {pd.to_datetime(latest_date).strftime('%Y-%m-%d')} | "
-          f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {TOP_N_PERCENT:.0f}% 컷 & "
-          f"익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% 여부 참고 표시)"
+          f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {TOP_N_PERCENT:.0f}% 컷 · "
+          f"익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% · ATR < {MAX_ATR_PCT:.1f}% 참고 표시)"
       )
       st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
 
@@ -1185,6 +1211,7 @@ else:
               boost_val = float(latest["Theme_Boost"])
               theme_val = str(latest.get("Theme", "-"))
               tp_prob_pct = float(latest["TP_Hit_Prob"]) * 100.0
+              atr_pct_val = float(latest["ATR_Pct"]) * 100.0
               pred_tp = float(latest["Predicted_TP"])
               close_p = float(latest["Close"])
 
@@ -1199,6 +1226,7 @@ else:
               )
 
               prob_passed = float(latest["TP_Hit_Prob"]) >= MIN_TP_HIT_PROB
+              atr_passed = atr_pct_val < MAX_ATR_PCT
               rank_status_text = "비교군 없음"
               rank_status_class = "status-warn"
               in_top_pct = False
@@ -1258,7 +1286,15 @@ else:
                   else f"기준 미달 ❌ (< {MIN_TP_HIT_PROB*100:.0f}%)"
               )
               prob_status_class = "status-pass" if prob_passed else "status-fail"
-              buy_recommended = prob_passed and in_top_pct
+
+              atr_status_text = (
+                  f"기준 충족 ✅ (< {MAX_ATR_PCT:.1f}%)"
+                  if atr_passed
+                  else f"변동성 과다 ❌ (≥ {MAX_ATR_PCT:.1f}%)"
+              )
+              atr_status_class = "status-pass" if atr_passed else "status-fail"
+
+              buy_recommended = prob_passed and in_top_pct and atr_passed
 
               st.subheader(f"📊 {target_ticker} [{theme_val}] 분석 리포트")
               st.caption(
@@ -1269,8 +1305,10 @@ else:
               if buy_recommended:
                 st.success(
                     f"✅ **매수 권장:** [{target_ticker}] 익절선달성률"
-                    f" ({tp_prob_pct:.1f}% ≥ {MIN_TP_HIT_PROB*100:.0f}%) 및"
-                    f" 랭킹 상위 {TOP_N_PERCENT:.0f}% 기준을 충족합니다."
+                    f" ({tp_prob_pct:.1f}% ≥ {MIN_TP_HIT_PROB*100:.0f}%),"
+                    f" 랭킹 상위 {TOP_N_PERCENT:.0f}% 및 ATR"
+                    f" ({atr_pct_val:.2f}% < {MAX_ATR_PCT:.1f}%) 기준을"
+                    " 충족합니다."
                 )
               else:
                 failed_reasons = []
@@ -1282,6 +1320,10 @@ else:
                 if not in_top_pct:
                   failed_reasons.append(
                       f"상위 {TOP_N_PERCENT:.0f}% 랭킹 미달"
+                  )
+                if not atr_passed:
+                  failed_reasons.append(
+                      f"ATR {atr_pct_val:.2f}% (≥ {MAX_ATR_PCT:.1f}%)"
                   )
                 reason_str = ", ".join(failed_reasons)
                 st.warning(
@@ -1308,6 +1350,11 @@ else:
                   f'<div class="metric-sub {prob_status_class}">{prob_status_text}</div>'
                   "</div>"
                   '<div class="metric-card">'
+                  '<div class="metric-title">ATR (14일 변동성)</div>'
+                  f'<div class="metric-value">{atr_pct_val:.2f}%</div>'
+                  f'<div class="metric-sub {atr_status_class}">{atr_status_text}</div>'
+                  "</div>"
+                  '<div class="metric-card">'
                   '<div class="metric-title">조정 랭킹 점수</div>'
                   f'<div class="metric-value">{adj_score:.4f}</div>'
                   f'<div class="metric-sub" style="color:#38BDF8;">테마가산점 {boost_val:+.3f}</div>'
@@ -1320,7 +1367,7 @@ else:
                   '<div class="metric-card">'
                   '<div class="metric-title">매수 권장 여부</div>'
                   f'<div class="metric-value {rec_class}">{rec_label}</div>'
-                  f'<div class="metric-sub" style="color:#AAAAAA;">Top {TOP_N_PERCENT:.0f}% &amp; 확률≥{MIN_TP_HIT_PROB*100:.0f}%</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">Top {TOP_N_PERCENT:.0f}% · 확률≥{MIN_TP_HIT_PROB*100:.0f}% · ATR&lt;{MAX_ATR_PCT:.1f}%</div>'
                   "</div>"
                   "</div>"
               )
@@ -1421,6 +1468,7 @@ else:
                 boost_val = float(row["Theme_Boost"])
                 theme_val = str(row.get("Theme", "-"))
                 tp_prob_pct = float(row["TP_Hit_Prob"]) * 100.0
+                atr_pct_val = float(row["ATR_Pct"]) * 100.0
                 pred_tp = float(row["Predicted_TP"])
                 close_p = float(row["Close"])
 
@@ -1429,6 +1477,7 @@ else:
                 )
 
                 prob_passed = float(row["TP_Hit_Prob"]) >= MIN_TP_HIT_PROB
+                atr_passed = atr_pct_val < MAX_ATR_PCT
 
                 if full_t_df is None or full_t_df.empty:
                   full_t_df = df_t.copy()
@@ -1487,19 +1536,27 @@ else:
                     f"검증 실행 시각: {now_kst_str()} | 소스: {source_label}"
                 )
 
-                if prob_passed:
+                if prob_passed and atr_passed:
                   st.success(
                       f"✨ **[{target_ticker}] 익절선달성률 기준"
                       f" ({tp_prob_pct:.1f}% ≥ {MIN_TP_HIT_PROB*100:.0f}%)"
+                      f" 및 ATR ({atr_pct_val:.2f}% < {MAX_ATR_PCT:.1f}%)"
                       " 충족!**"
                   )
                 else:
                   st.warning(
-                      f"⚠️ **[{target_ticker}] 익절선달성률 기준 미달"
-                      f" ({tp_prob_pct:.1f}% < {MIN_TP_HIT_PROB*100:.0f}%)**"
+                      f"⚠️ **[{target_ticker}] 시그널 기준 미확인/미달"
+                      f" (익절선달성률 {tp_prob_pct:.1f}%, ATR"
+                      f" {atr_pct_val:.2f}%)**"
                   )
 
                 st.markdown(METRIC_CSS, unsafe_allow_html=True)
+                atr_sub_color = "#00FF7F" if atr_passed else "#FF6B6B"
+                atr_sub_text = (
+                    f"기준 < {MAX_ATR_PCT:.1f}%"
+                    if atr_passed
+                    else f"기준 ≥ {MAX_ATR_PCT:.1f}% (과다)"
+                )
                 card_html_1 = (
                     '<div class="metric-container">'
                     '<div class="metric-card">'
@@ -1515,6 +1572,11 @@ else:
                     '<div class="metric-title">목표 익절선달성률</div>'
                     f'<div class="metric-value">{tp_prob_pct:.1f}%</div>'
                     f'<div class="metric-sub" style="color:#AAAAAA;">기준 {MIN_TP_HIT_PROB*100:.0f}% 이상</div>'
+                    "</div>"
+                    '<div class="metric-card">'
+                    '<div class="metric-title">ATR (14일 변동성)</div>'
+                    f'<div class="metric-value">{atr_pct_val:.2f}%</div>'
+                    f'<div class="metric-sub" style="color:{atr_sub_color};">{atr_sub_text}</div>'
                     "</div>"
                     '<div class="metric-card">'
                     '<div class="metric-title">예상 목표익절폭</div>'
@@ -1657,6 +1719,7 @@ else:
               curr_price = float(latest_row["Close"])
               holding_return = (curr_price - pos_price) / pos_price * 100.0
               tp_prob_pct = float(latest_row["TP_Hit_Prob"]) * 100.0
+              atr_pct_val = float(latest_row["ATR_Pct"]) * 100.0
               pred_tp = float(latest_row["Predicted_TP"])
               theme_val = str(latest_row.get("Theme", "-"))
 
@@ -1703,6 +1766,11 @@ else:
                   '<div class="metric-title">목표 익절선달성률</div>'
                   f'<div class="metric-value">{tp_prob_pct:.1f}%</div>'
                   f'<div class="metric-sub" style="color:#AAAAAA;">기준 {MIN_TP_HIT_PROB*100:.0f}% 이상</div>'
+                  "</div>"
+                  '<div class="metric-card">'
+                  '<div class="metric-title">ATR (14일 변동성)</div>'
+                  f'<div class="metric-value">{atr_pct_val:.2f}%</div>'
+                  f'<div class="metric-sub" style="color:#AAAAAA;">권장 상한 &lt; {MAX_ATR_PCT:.1f}%</div>'
                   "</div>"
                   '<div class="metric-card">'
                   '<div class="metric-title">갱신된 추천 손절/익절</div>'
