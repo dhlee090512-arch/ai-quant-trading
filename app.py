@@ -531,27 +531,38 @@ def compute_stock_factors(group: pd.DataFrame) -> pd.DataFrame:
 def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
   df_out = df_in.copy()
   cfg_theme_map = config.get("theme_map", {})
-  merged_theme_map = {**DEFAULT_THEME_MAP, **{str(k).upper(): str(v) for k, v in cfg_theme_map.items()}}
+  merged_theme_map = {
+      **DEFAULT_THEME_MAP,
+      **{str(k).upper(): str(v) for k, v in cfg_theme_map.items()},
+  }
 
   if "Theme" not in df_out.columns:
-    df_out["Theme"] = df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+    df_out["Theme"] = (
+        df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+    )
   else:
     df_out["Theme"] = df_out["Theme"].fillna(
         df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
     )
 
   if "Ret_5d" in df_out.columns:
-    df_out["Theme_Ret_5d"] = df_out.groupby(["Date", "Theme"])["Ret_5d"].transform("mean")
+    df_out["Theme_Ret_5d"] = (
+        df_out.groupby(["Date", "Theme"])["Ret_5d"].transform("mean")
+    )
   else:
     df_out["Theme_Ret_5d"] = 0.0
 
   if "Ret_20d" in df_out.columns:
-    df_out["Theme_Ret_20d"] = df_out.groupby(["Date", "Theme"])["Ret_20d"].transform("mean")
+    df_out["Theme_Ret_20d"] = (
+        df_out.groupby(["Date", "Theme"])["Ret_20d"].transform("mean")
+    )
   else:
     df_out["Theme_Ret_20d"] = 0.0
 
   if "Dist_MA20" in df_out.columns:
-    df_out["Theme_Dist_MA20"] = df_out.groupby(["Date", "Theme"])["Dist_MA20"].transform("mean")
+    df_out["Theme_Dist_MA20"] = (
+        df_out.groupby(["Date", "Theme"])["Dist_MA20"].transform("mean")
+    )
   else:
     df_out["Theme_Dist_MA20"] = 0.0
 
@@ -562,7 +573,9 @@ def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
   return df_out
 
 
-def build_feature_matrix(df_sub: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+def build_feature_matrix(
+    df_sub: pd.DataFrame, feature_cols: list[str]
+) -> pd.DataFrame:
   mat = pd.DataFrame(index=df_sub.index)
   for col in feature_cols:
     if col in df_sub.columns:
@@ -572,7 +585,9 @@ def build_feature_matrix(df_sub: pd.DataFrame, feature_cols: list[str]) -> pd.Da
   return mat
 
 
-def score_candidates(df_sub: pd.DataFrame, config: dict, feature_cols: list[str]) -> pd.DataFrame:
+def score_candidates(
+    df_sub: pd.DataFrame, config: dict, feature_cols: list[str]
+) -> pd.DataFrame:
   scored = df_sub.copy()
   baseline_rate = float(config.get("baseline_tp_rate", 0.35))
   boost_weight = float(config.get("boost_weight", 8.0))
@@ -581,7 +596,9 @@ def score_candidates(df_sub: pd.DataFrame, config: dict, feature_cols: list[str]
   scored["Theme_Roll_TP_Rate"] = (
       scored["Theme"].map(theme_roll_rates).fillna(baseline_rate).astype(float)
   )
-  scored["Theme_Boost"] = (scored["Theme_Roll_TP_Rate"] - baseline_rate) * boost_weight
+  scored["Theme_Boost"] = (
+      scored["Theme_Roll_TP_Rate"] - baseline_rate
+  ) * boost_weight
 
   x_mat = build_feature_matrix(scored, feature_cols)
   scored["Pred_Score"] = np.asarray(ranker_lgb.predict(x_mat), dtype=float)
@@ -597,7 +614,9 @@ def score_candidates(df_sub: pd.DataFrame, config: dict, feature_cols: list[str]
   return scored
 
 
-def compute_trade_levels(entry_price: float, atr_pct: float, predicted_tp: float, config: dict):
+def compute_trade_levels(
+    entry_price: float, atr_pct: float, predicted_tp: float, config: dict
+):
   max_sl_limit = float(config.get("max_sl_limit", -8.0))
   min_tp_rr = float(config.get("min_tp_rr", 1.5))
 
@@ -625,10 +644,18 @@ else:
   LOOKBACK_DAYS = int(MODEL_CONFIG.get("lookback_days", 40))
   UNIVERSE_TICKERS = [t.upper() for t in MODEL_CONFIG.get("universe_tickers", [])]
 
-  base_numeric_cols = [c for c in FEATURE_COLS if c not in {
-      "Theme_Ret_5d", "Theme_Ret_20d", "Theme_Dist_MA20",
-      "Theme_Ret_5d_Zscore", "Rel_Strength_Theme_5d",
-  }]
+  base_numeric_cols = [
+      c
+      for c in FEATURE_COLS
+      if c
+      not in {
+          "Theme_Ret_5d",
+          "Theme_Ret_20d",
+          "Theme_Dist_MA20",
+          "Theme_Ret_5d_Zscore",
+          "Rel_Strength_Theme_5d",
+      }
+  ]
 
   @st.cache_data(ttl=3600)
   def fetch_and_process_universe_data():
@@ -804,6 +831,7 @@ else:
     )
 
     df_display = None
+    df_top10_all = None
     scan_timestamp = None
     run_time_kst = now_kst_str()
     top_cutoff_score = None
@@ -840,6 +868,45 @@ else:
             avg_universe_score = float(
                 group_sorted["Adjusted_Pred_Score"].mean()
             )
+
+            # 선별 기준 무관: 당일 조정 점수 상위 10개 종목 요약 테이블 구성
+            top10_rows = []
+            for r_idx, t_row in group_sorted.head(10).iterrows():
+              rank_pos = r_idx + 1
+              t_entry = float(t_row["Close"])
+              t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
+                  t_entry,
+                  float(t_row["ATR_Pct"]),
+                  float(t_row["Predicted_TP"]),
+                  MODEL_CONFIG,
+              )
+              t_prob_val = float(t_row["TP_Hit_Prob"])
+              in_top_k = rank_pos <= top_k
+              prob_ok = t_prob_val >= MIN_TP_HIT_PROB
+
+              if in_top_k and prob_ok:
+                status_badge = "선별 충족 ✅"
+              elif in_top_k and not prob_ok:
+                status_badge = "상위컷 충족·확률 미달 ⚠️"
+              else:
+                status_badge = "상위컷 외 ❌"
+
+              top10_rows.append({
+                  "순위": rank_pos,
+                  "Ticker": t_row["Ticker"],
+                  "Theme": str(t_row.get("Theme", "-")),
+                  "조정 점수": round(float(t_row["Adjusted_Pred_Score"]), 4),
+                  "기본 점수": round(float(t_row["Pred_Score"]), 4),
+                  "테마가산점": f"{float(t_row['Theme_Boost']):+.3f}",
+                  "진입가($)": round(t_entry, 2),
+                  "손절가($)": round(t_sl_p, 2),
+                  "손절폭(%)": f"{t_sl_pct:.2f}%",
+                  "익절가($)": round(t_tp_p, 2),
+                  "익절폭(%)": f"+{t_tp_pct:.2f}%",
+                  "익절선달성률": f"{t_prob_val * 100.0:.1f}%",
+                  "선별 상태": status_badge,
+              })
+            df_top10_all = pd.DataFrame(top10_rows)
 
             top_candidates = group_sorted.head(top_k)
             filtered_latest = top_candidates[
@@ -987,6 +1054,17 @@ else:
           "</div>"
       )
       st.markdown(summary_cards_html, unsafe_allow_html=True)
+
+    # 하단 고정 섹션: 진입 선별 기준과 관계없이 당일 조정 점수 상위 10개 종목 표 출력
+    if df_top10_all is not None and not df_top10_all.empty:
+      st.markdown("---")
+      st.markdown("#### 🏆 당일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
+      st.caption(
+          f"기준일: {pd.to_datetime(latest_date).strftime('%Y-%m-%d')} | "
+          f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {TOP_N_PERCENT:.0f}% 컷 & "
+          f"익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% 여부 참고 표시)"
+      )
+      st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
