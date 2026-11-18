@@ -38,24 +38,99 @@ session.headers.update({
     )
 })
 
-DEFAULT_THEME_MAP = {
-    "AAPL": "IT", "MSFT": "IT", "NVDA": "IT", "AVGO": "IT", "AMD": "IT",
-    "TSM": "IT", "INTC": "IT", "QCOM": "IT", "MU": "IT", "AMAT": "IT",
-    "MRVL": "IT", "ORCL": "IT", "CRM": "IT", "ADBE": "IT", "CSCO": "IT",
-    "JPM": "Finance", "BAC": "Finance", "WFC": "Finance", "GS": "Finance",
-    "MS": "Finance", "C": "Finance", "BLK": "Finance", "SCHW": "Finance",
-    "AXP": "Finance", "V": "Finance", "MA": "Finance", "COF": "Finance",
-    "UNH": "Healthcare", "JNJ": "Healthcare", "LLY": "Healthcare",
-    "ABBV": "Healthcare", "MRK": "Healthcare", "PFE": "Healthcare",
-    "TMO": "Healthcare", "ABT": "Healthcare", "AMGN": "Healthcare",
-    "GILD": "Healthcare", "ISRG": "Healthcare", "MDT": "Healthcare",
-    "WMT": "Defensive", "COST": "Defensive", "PG": "Defensive",
-    "KO": "Defensive", "PEP": "Defensive", "TGT": "Defensive",
-    "LOW": "Defensive", "HD": "Defensive", "TJX": "Defensive",
-    "TAP": "Defensive", "TSN": "Defensive", "KDP": "Defensive",
-    "YUM": "Defensive", "KHC": "Defensive", "ADM": "Defensive",
-    "CL": "Defensive", "GIS": "Defensive", "K": "Defensive",
+SEED_TICKERS_BY_THEME = {
+    "IT": (
+        "AAPL MSFT NVDA AVGO AMD ORCL CSCO IBM CRM ADBE INTU NOW AMAT LRCX KLAC"
+        " MU QCOM TXN ADI APH ANET ACN PLTR PANW CRWD FTNT CDNS SNPS MCHP TEL"
+        " MPWR NXPI ON TER KEYS CDW FSLR IT GDDY GEN HPE HPQ NTAP STX WDC SWKS"
+        " ZBRA TYL EPAM AKAM FFIV TRMB PTC ANSS VRSN CTSH JNPR SMCI MDB DDOG"
+        " NET ZS HUBS TTD U PATH DOCU OKTA"
+    ).split(),
+    "Finance": (
+        "BRK-B JPM V MA BAC WFC GS MS C BLK AXP SCHW SPGI PGR CB MMC AON CME ICE"
+        " BK STT USB PNC COF TRV ALL MET PRU AIG MCO AJG WTW BRO FIS FI GPN PYPL"
+        " MSCI NDAQ CBOE RJF TROW BEN IVZ FITB HBAN RF CFG KEY MTB NTRS SYF ALLY"
+        " DFS HIG CINF L GL AIZ EG ACGL WRB FDS JKHY CPAY COIN HOOD SOFI"
+    ).split(),
+    "Healthcare": (
+        "LLY JNJ ABBV UNH MRK TMO ABT AMGN GILD ISRG SYK BSX MDT DHR VRTX REGN"
+        " BMY CVS CI ELV HCA BDX EW ZTS IDXX IQV MCK COR CAH RMD BIIB MRNA BAX"
+        " HOLX ALGN TECH WAT MTD A DXCM PODD GEHC SOLV LH DGX HUM MOH CNC UHS"
+        " DVA INCY EXAS VTRS OGN RVTY COO HSIC XRAY CRL CTLT ILMN NBIX HALO"
+        " JAZZ UTHR RARE SGEN VKTX"
+    ).split(),
+    "Defensive": (
+        "WMT COST PG KO PEP PM MO CL MDLZ KMB TGT KR SYY ADM HSY CHD GIS KHC STZ"
+        " MKC CPB CAG SJM CLX TAP BG LW INGR BF-B EL MCD NEE SO DUK AEP SRE D"
+        " EXC XEL PEG ED WEC ES AWK ATO FE EIX PPL CMS CNP NI EVRG LNT AES NRG"
+        " CEG HD LOW TJX ROST DG DLTR ORLY AZO YUM CMG SBUX DPZ"
+    ).split(),
 }
+
+
+def build_seed_theme_map() -> dict[str, str]:
+  theme_map: dict[str, str] = {}
+  for theme_name, tickers in SEED_TICKERS_BY_THEME.items():
+    for tk in tickers:
+      norm_tk = str(tk).strip().upper()
+      if norm_tk and norm_tk not in theme_map:
+        theme_map[norm_tk] = theme_name
+  return theme_map
+
+
+DEFAULT_THEME_MAP = build_seed_theme_map()
+SEED_UNIVERSE_TICKERS = list(DEFAULT_THEME_MAP.keys())
+
+
+def sync_theme_map_in_config(config: dict, config_path: str) -> dict:
+  updated_cfg = dict(config) if isinstance(config, dict) else {}
+  raw_theme_map = updated_cfg.get("theme_map", {})
+  merged_theme_map = dict(DEFAULT_THEME_MAP)
+
+  if isinstance(raw_theme_map, dict):
+    for k, v in raw_theme_map.items():
+      norm_k = str(k).strip().upper()
+      if norm_k and v:
+        merged_theme_map[norm_k] = str(v)
+
+  had_complete_theme_map = (
+      isinstance(raw_theme_map, dict)
+      and all(tk in {str(k).strip().upper() for k in raw_theme_map.keys()} for tk in SEED_UNIVERSE_TICKERS)
+  )
+
+  updated_cfg["theme_map"] = merged_theme_map
+
+  raw_universe = updated_cfg.get("universe_tickers", [])
+  norm_universe = []
+  seen_univ = set()
+  if isinstance(raw_universe, list):
+    for tk in raw_universe:
+      norm_tk = str(tk).strip().upper()
+      if norm_tk and norm_tk not in seen_univ:
+        seen_univ.add(norm_tk)
+        norm_universe.append(norm_tk)
+
+  for tk in SEED_UNIVERSE_TICKERS:
+    if tk not in seen_univ:
+      seen_univ.add(tk)
+      norm_universe.append(tk)
+
+  had_complete_universe = (
+      isinstance(raw_universe, list)
+      and len(raw_universe) == len(norm_universe)
+      and [str(t).strip().upper() for t in raw_universe] == norm_universe
+  )
+  updated_cfg["universe_tickers"] = norm_universe
+
+  if not had_complete_theme_map or not had_complete_universe:
+    try:
+      os.makedirs(os.path.dirname(config_path), exist_ok=True)
+      with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(updated_cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+      pass
+
+  return updated_cfg
 
 
 # 1. 깃허브에 저장된 모델, 피처 목록 및 설정 메타데이터 로드 (캐싱 적용)
@@ -69,8 +144,9 @@ def load_models_and_metadata():
     with open("models/feature_cols.json", "r", encoding="utf-8") as f:
       feature_cols = json.load(f)
 
-    if os.path.exists("models/model_config.json"):
-      with open("models/model_config.json", "r", encoding="utf-8") as f:
+    config_path = "models/model_config.json"
+    if os.path.exists(config_path):
+      with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
     else:
       raise FileNotFoundError(
@@ -78,6 +154,7 @@ def load_models_and_metadata():
           " 실행해 메타데이터를 업로드해주세요."
       )
 
+    config = sync_theme_map_in_config(config, config_path)
     return ranker, classifier, tp_reg, feature_cols, config, None
   except Exception as e:
     return None, None, None, None, None, str(e)
@@ -533,16 +610,16 @@ def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
   cfg_theme_map = config.get("theme_map", {})
   merged_theme_map = {
       **DEFAULT_THEME_MAP,
-      **{str(k).upper(): str(v) for k, v in cfg_theme_map.items()},
+      **{str(k).strip().upper(): str(v) for k, v in cfg_theme_map.items()},
   }
 
   if "Theme" not in df_out.columns:
     df_out["Theme"] = (
-        df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+        df_out["Ticker"].astype(str).str.strip().str.upper().map(merged_theme_map).fillna("Defensive")
     )
   else:
     df_out["Theme"] = df_out["Theme"].fillna(
-        df_out["Ticker"].astype(str).str.upper().map(merged_theme_map).fillna("Defensive")
+        df_out["Ticker"].astype(str).str.strip().str.upper().map(merged_theme_map).fillna("Defensive")
     )
 
   if "Ret_5d" in df_out.columns:
@@ -642,7 +719,10 @@ else:
   MIN_TP_HIT_PROB = float(MODEL_CONFIG.get("min_tp_hit_prob", 0.30))
   BOOST_WEIGHT = float(MODEL_CONFIG.get("boost_weight", 8.0))
   LOOKBACK_DAYS = int(MODEL_CONFIG.get("lookback_days", 40))
-  UNIVERSE_TICKERS = [t.upper() for t in MODEL_CONFIG.get("universe_tickers", [])]
+  UNIVERSE_TICKERS = [
+      str(t).strip().upper()
+      for t in MODEL_CONFIG.get("universe_tickers", SEED_UNIVERSE_TICKERS)
+  ]
 
   base_numeric_cols = [
       c
@@ -827,7 +907,7 @@ else:
     )
     st.caption(
         f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
-        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목"
+        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 (theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
     )
 
     df_display = None
@@ -869,7 +949,6 @@ else:
                 group_sorted["Adjusted_Pred_Score"].mean()
             )
 
-            # 선별 기준 무관: 당일 조정 점수 상위 10개 종목 요약 테이블 구성
             top10_rows = []
             for r_idx, t_row in group_sorted.head(10).iterrows():
               rank_pos = r_idx + 1
@@ -1055,7 +1134,6 @@ else:
       )
       st.markdown(summary_cards_html, unsafe_allow_html=True)
 
-    # 하단 고정 섹션: 진입 선별 기준과 관계없이 당일 조정 점수 상위 10개 종목 표 출력
     if df_top10_all is not None and not df_top10_all.empty:
       st.markdown("---")
       st.markdown("#### 🏆 당일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
