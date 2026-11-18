@@ -159,6 +159,7 @@ menu = st.sidebar.selectbox(
     "메뉴 선택",
     [
         "🔥 당일 종목 추천 (스캐너)",
+        "📅 과거 날짜 종목 추천 (스캐너)",
         "🔍 특정 종목 당일 분석",
         "⏳ 특정 종목 과거 시점 분석",
         "🛡️ 기존 보유 포지션 진단 및 매매 가이드",
@@ -716,6 +717,251 @@ def compute_trade_levels(
   return sl_price, sl_pct, tp_price, tp_pct
 
 
+def render_scanner_view(
+    df_clean: pd.DataFrame,
+    target_date_ts: pd.Timestamp,
+    top_n_percent: float,
+    min_tp_hit_prob: float,
+    max_atr_pct: float,
+    config: dict,
+    feature_cols: list[str],
+    date_label_prefix: str,
+    requested_date_str: str | None = None,
+):
+  run_time_kst = now_kst_str()
+  df_eligible = df_clean[df_clean["Date"] <= target_date_ts].copy()
+
+  if df_eligible.empty:
+    st.warning(
+        f"⚠️ 선택한 기준일({requested_date_str or target_date_ts.strftime('%Y-%m-%d')}) "
+        "이하의 유효한 시세 데이터가 없습니다."
+    )
+    return
+
+  effective_date = df_eligible["Date"].max()
+  effective_date_str = pd.to_datetime(effective_date).strftime("%Y-%m-%d")
+  scan_timestamp = (
+      f"{effective_date_str} (조회 시각: {run_time_kst})"
+  )
+
+  if requested_date_str and requested_date_str != effective_date_str:
+    st.caption(
+        f"ℹ️ 요청하신 `{requested_date_str}`은 휴장일/미집계일이므로, "
+        f"직전 유효 거래일인 **`{effective_date_str}`** 기준으로 조회했습니다."
+    )
+
+  latest_subset = df_eligible[df_eligible["Date"] == effective_date].copy()
+  if latest_subset.empty:
+    st.warning("⚠️ 해당 기준일에 조건을 충족하는 유효한 데이터가 없습니다.")
+    return
+
+  scored_latest = score_candidates(latest_subset, config, feature_cols)
+  group_sorted = scored_latest.sort_values(
+      by="Adjusted_Pred_Score", ascending=False
+  ).reset_index(drop=True)
+
+  top_k = max(1, int(len(group_sorted) * (top_n_percent / 100.0)))
+  top_cutoff_score = float(
+      group_sorted.iloc[top_k - 1]["Adjusted_Pred_Score"]
+  )
+  avg_universe_score = float(group_sorted["Adjusted_Pred_Score"].mean())
+
+  top10_rows = []
+  for r_idx, t_row in group_sorted.head(10).iterrows():
+    rank_pos = r_idx + 1
+    t_entry = float(t_row["Close"])
+    t_atr_pct = float(t_row["ATR_Pct"]) * 100.0
+    t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
+        t_entry,
+        float(t_row["ATR_Pct"]),
+        float(t_row["Predicted_TP"]),
+        config,
+    )
+    t_prob_val = float(t_row["TP_Hit_Prob"])
+    in_top_k = rank_pos <= top_k
+    prob_ok = t_prob_val >= min_tp_hit_prob
+    atr_ok = t_atr_pct < max_atr_pct
+
+    if in_top_k and prob_ok and atr_ok:
+      status_badge = "선별 충족 ✅"
+    elif in_top_k and not atr_ok:
+      status_badge = f"ATR {max_atr_pct:.1f}% 초과 ❌"
+    elif in_top_k and not prob_ok:
+      status_badge = "상위컷 충족·확률 미달 ⚠️"
+    else:
+      status_badge = "상위컷 외 ❌"
+
+    top10_rows.append({
+        "순위": rank_pos,
+        "Ticker": t_row["Ticker"],
+        "Theme": str(t_row.get("Theme", "-")),
+        "조정 점수": round(float(t_row["Adjusted_Pred_Score"]), 4),
+        "기본 점수": round(float(t_row["Pred_Score"]), 4),
+        "테마가산점": f"{float(t_row['Theme_Boost']):+.3f}",
+        "ATR(%)": f"{t_atr_pct:.2f}%",
+        "진입가($)": round(t_entry, 2),
+        "손절가($)": round(t_sl_p, 2),
+        "손절폭(%)": f"{t_sl_pct:.2f}%",
+        "익절가($)": round(t_tp_p, 2),
+        "익절폭(%)": f"+{t_tp_pct:.2f}%",
+        "익절선달성률": f"{t_prob_val * 100.0:.1f}%",
+        "선별 상태": status_badge,
+    })
+  df_top10_all = pd.DataFrame(top10_rows)
+
+  top_candidates = group_sorted.head(top_k).copy()
+  top_candidates["ATR_Pct_Val"] = (
+      pd.to_numeric(top_candidates["ATR_Pct"], errors="coerce") * 100.0
+  )
+  filtered_latest = top_candidates[
+      (top_candidates["TP_Hit_Prob"] >= min_tp_hit_prob)
+      & (top_candidates["ATR_Pct_Val"] < max_atr_pct)
+  ].reset_index(drop=True)
+
+  df_display = pd.DataFrame()
+  avg_filtered_score = None
+
+  if len(filtered_latest) > 0:
+    avg_filtered_score = float(
+        filtered_latest["Adjusted_Pred_Score"].mean()
+    )
+    display_results = []
+
+    for idx, row in filtered_latest.iterrows():
+      rank_num = idx + 1
+      entry_price = float(row["Close"])
+      atr_pct_val = float(row["ATR_Pct"]) * 100.0
+      sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
+          entry_price,
+          float(row["ATR_Pct"]),
+          float(row["Predicted_TP"]),
+          config,
+      )
+      tp_prob_pct = float(row["TP_Hit_Prob"]) * 100.0
+      adj_score_val = float(row["Adjusted_Pred_Score"])
+      boost_val = float(row["Theme_Boost"])
+      theme_val = str(row.get("Theme", "-"))
+
+      display_results.append({
+          "순위": rank_num,
+          "Ticker": row["Ticker"],
+          "Theme": theme_val,
+          "조정 점수": round(adj_score_val, 4),
+          "테마가산점": f"{boost_val:+.3f}",
+          "ATR(%)": f"{atr_pct_val:.2f}%",
+          "진입가($)": round(entry_price, 2),
+          "손절가($)": round(sl_price, 2),
+          "손절폭(%)": f"{sl_pct:.2f}%",
+          "익절가($)": round(tp_price, 2),
+          "익절폭(%)": f"+{tp_pct:.2f}%",
+          "익절선달성률": f"{tp_prob_pct:.1f}%",
+      })
+
+    df_display = pd.DataFrame(display_results)
+    st.success(
+        f"✨ 기준(상위 {top_n_percent:.0f}% 랭킹, 익절선달성률"
+        f" {min_tp_hit_prob*100:.0f}% 이상, ATR < {max_atr_pct:.1f}%)"
+        f" 충족 종목 {len(df_display)}개 선별 완료!"
+    )
+  else:
+    st.warning(
+        f"⚠️ 기준(상위 {top_n_percent:.0f}% 랭킹, 익절선달성률"
+        f" {min_tp_hit_prob*100:.0f}% 이상, ATR < {max_atr_pct:.1f}%)"
+        "을 충족하는 종목이 없습니다. (관망)"
+    )
+
+  if df_display is not None and not df_display.empty:
+    st.markdown(f"📅 **{date_label_prefix}:** `{scan_timestamp}`")
+
+    st.markdown(METRIC_CSS, unsafe_allow_html=True)
+
+    cards_per_row = 2
+    num_picks = len(df_display)
+    for start_idx in range(0, num_picks, cards_per_row):
+      cols = st.columns(cards_per_row)
+      for offset in range(cards_per_row):
+        row_idx = start_idx + offset
+        if row_idx >= num_picks:
+          continue
+        r = df_display.iloc[row_idx]
+        with cols[offset]:
+          box_html = (
+              '<div class="pick-box">'
+              '<div class="pick-header">'
+              f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]} <span style="font-size:13px; color:#9AA4B2;">[{r["Theme"]}]</span></div>'
+              '<div class="pick-badges">'
+              f'<div class="pick-atr">ATR {r["ATR(%)"]}</div>'
+              f'<div class="pick-score">조정점수 {r["조정 점수"]:.4f} ({r["테마가산점"]})</div>'
+              f'<div class="pick-surv">익절선달성률 {r["익절선달성률"]}</div>'
+              "</div>"
+              "</div>"
+              '<div class="pick-grid">'
+              '<div class="pick-item">'
+              '<div class="pick-item-label">진입가($)</div>'
+              f'<div class="pick-item-val">${r["진입가($)"]:.2f}</div>'
+              "</div>"
+              '<div class="pick-item">'
+              '<div class="pick-item-label">손절가 / 손절폭</div>'
+              f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["손절폭(%)"].strip()})</span></div>'
+              "</div>"
+              '<div class="pick-item">'
+              '<div class="pick-item-label">익절가 / 익절폭</div>'
+              f'<div class="pick-item-val">${r["익절가($)"]:.2f}<span class="pick-tp">({r["익절폭(%)"].strip()})</span></div>'
+              "</div>"
+              "</div>"
+              "</div>"
+          )
+          st.markdown(box_html, unsafe_allow_html=True)
+
+    st.markdown("#### 📋 전체 추천 종목 요약 표")
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+    cutoff_str = (
+        f"{top_cutoff_score:.4f}" if top_cutoff_score is not None else "-"
+    )
+    avg_rec_str = (
+        f"{avg_filtered_score:.4f}"
+        if avg_filtered_score is not None
+        else "-"
+    )
+    avg_univ_str = (
+        f"{avg_universe_score:.4f}"
+        if avg_universe_score is not None
+        else "-"
+    )
+
+    summary_cards_html = (
+        '<div class="metric-container">'
+        '<div class="metric-card">'
+        f'<div class="metric-title">상위 {top_n_percent:.0f}% 조정 점수 (커트라인)</div>'
+        f'<div class="metric-value" style="color:#38BDF8;">{cutoff_str}</div>'
+        f'<div class="metric-sub" style="color:#AAAAAA;">기준일 전체 대상 상위 {top_n_percent:.0f}% 경계</div>'
+        "</div>"
+        '<div class="metric-card">'
+        '<div class="metric-title">추천 종목 평균 조정 점수</div>'
+        f'<div class="metric-value" style="color:#00FF7F;">{avg_rec_str}</div>'
+        '<div class="metric-sub" style="color:#AAAAAA;">최종 선별 추천 종목 평균</div>'
+        "</div>"
+        '<div class="metric-card">'
+        '<div class="metric-title">전체 대상 평균 조정 점수</div>'
+        f'<div class="metric-value">{avg_univ_str}</div>'
+        '<div class="metric-sub" style="color:#AAAAAA;">기준일 전체 대상 종목 평균</div>'
+        "</div>"
+        "</div>"
+    )
+    st.markdown(summary_cards_html, unsafe_allow_html=True)
+
+  if df_top10_all is not None and not df_top10_all.empty:
+    st.markdown("---")
+    st.markdown("#### 🏆 기준일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
+    st.caption(
+        f"기준일: {effective_date_str} | "
+        f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {top_n_percent:.0f}% 컷 · "
+        f"익절선달성률 ≥ {min_tp_hit_prob*100:.0f}% · ATR < {max_atr_pct:.1f}% 참고 표시)"
+    )
+    st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
+
+
 # 모델 로드 실패 시 에러 안내 문구 출력
 if load_error is not None:
   st.error(
@@ -922,253 +1168,76 @@ else:
         f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
     )
 
-    df_display = None
-    df_top10_all = None
-    scan_timestamp = None
-    run_time_kst = now_kst_str()
-    top_cutoff_score = None
-    avg_filtered_score = None
-    avg_universe_score = None
-
     with st.spinner(
         "유니버스 시세·테마 팩터 연산 및 3중 앙상블 추론 중..."
     ):
       try:
         df_clean = fetch_and_process_universe_data()
-
         if not df_clean.empty:
-          latest_date = df_clean["Date"].max()
-          scan_timestamp = (
-              f"{pd.to_datetime(latest_date).strftime('%Y-%m-%d')} "
-              f"(조회 시각: {run_time_kst})"
+          latest_date = pd.Timestamp(df_clean["Date"].max())
+          render_scanner_view(
+              df_clean=df_clean,
+              target_date_ts=latest_date,
+              top_n_percent=TOP_N_PERCENT,
+              min_tp_hit_prob=MIN_TP_HIT_PROB,
+              max_atr_pct=MAX_ATR_PCT,
+              config=MODEL_CONFIG,
+              feature_cols=FEATURE_COLS,
+              date_label_prefix="타겟 기준일 (최신 마감일)",
           )
-
-          latest_subset = df_clean[df_clean["Date"] == latest_date].copy()
-
-          if not latest_subset.empty:
-            scored_latest = score_candidates(
-                latest_subset, MODEL_CONFIG, FEATURE_COLS
-            )
-            group_sorted = scored_latest.sort_values(
-                by="Adjusted_Pred_Score", ascending=False
-            ).reset_index(drop=True)
-
-            top_k = max(1, int(len(group_sorted) * (TOP_N_PERCENT / 100.0)))
-            top_cutoff_score = float(
-                group_sorted.iloc[top_k - 1]["Adjusted_Pred_Score"]
-            )
-            avg_universe_score = float(
-                group_sorted["Adjusted_Pred_Score"].mean()
-            )
-
-            top10_rows = []
-            for r_idx, t_row in group_sorted.head(10).iterrows():
-              rank_pos = r_idx + 1
-              t_entry = float(t_row["Close"])
-              t_atr_pct = float(t_row["ATR_Pct"]) * 100.0
-              t_sl_p, t_sl_pct, t_tp_p, t_tp_pct = compute_trade_levels(
-                  t_entry,
-                  float(t_row["ATR_Pct"]),
-                  float(t_row["Predicted_TP"]),
-                  MODEL_CONFIG,
-              )
-              t_prob_val = float(t_row["TP_Hit_Prob"])
-              in_top_k = rank_pos <= top_k
-              prob_ok = t_prob_val >= MIN_TP_HIT_PROB
-              atr_ok = t_atr_pct < MAX_ATR_PCT
-
-              if in_top_k and prob_ok and atr_ok:
-                status_badge = "선별 충족 ✅"
-              elif in_top_k and not atr_ok:
-                status_badge = f"ATR {MAX_ATR_PCT:.1f}% 초과 ❌"
-              elif in_top_k and not prob_ok:
-                status_badge = "상위컷 충족·확률 미달 ⚠️"
-              else:
-                status_badge = "상위컷 외 ❌"
-
-              top10_rows.append({
-                  "순위": rank_pos,
-                  "Ticker": t_row["Ticker"],
-                  "Theme": str(t_row.get("Theme", "-")),
-                  "조정 점수": round(float(t_row["Adjusted_Pred_Score"]), 4),
-                  "기본 점수": round(float(t_row["Pred_Score"]), 4),
-                  "테마가산점": f"{float(t_row['Theme_Boost']):+.3f}",
-                  "ATR(%)": f"{t_atr_pct:.2f}%",
-                  "진입가($)": round(t_entry, 2),
-                  "손절가($)": round(t_sl_p, 2),
-                  "손절폭(%)": f"{t_sl_pct:.2f}%",
-                  "익절가($)": round(t_tp_p, 2),
-                  "익절폭(%)": f"+{t_tp_pct:.2f}%",
-                  "익절선달성률": f"{t_prob_val * 100.0:.1f}%",
-                  "선별 상태": status_badge,
-              })
-            df_top10_all = pd.DataFrame(top10_rows)
-
-            top_candidates = group_sorted.head(top_k).copy()
-            top_candidates["ATR_Pct_Val"] = (
-                pd.to_numeric(top_candidates["ATR_Pct"], errors="coerce")
-                * 100.0
-            )
-            filtered_latest = top_candidates[
-                (top_candidates["TP_Hit_Prob"] >= MIN_TP_HIT_PROB)
-                & (top_candidates["ATR_Pct_Val"] < MAX_ATR_PCT)
-            ].reset_index(drop=True)
-
-            if len(filtered_latest) > 0:
-              avg_filtered_score = float(
-                  filtered_latest["Adjusted_Pred_Score"].mean()
-              )
-              display_results = []
-
-              for idx, row in filtered_latest.iterrows():
-                rank_num = idx + 1
-                entry_price = float(row["Close"])
-                atr_pct_val = float(row["ATR_Pct"]) * 100.0
-                sl_price, sl_pct, tp_price, tp_pct = compute_trade_levels(
-                    entry_price,
-                    float(row["ATR_Pct"]),
-                    float(row["Predicted_TP"]),
-                    MODEL_CONFIG,
-                )
-                tp_prob_pct = float(row["TP_Hit_Prob"]) * 100.0
-                adj_score_val = float(row["Adjusted_Pred_Score"])
-                boost_val = float(row["Theme_Boost"])
-                theme_val = str(row.get("Theme", "-"))
-
-                display_results.append({
-                    "순위": rank_num,
-                    "Ticker": row["Ticker"],
-                    "Theme": theme_val,
-                    "조정 점수": round(adj_score_val, 4),
-                    "테마가산점": f"{boost_val:+.3f}",
-                    "ATR(%)": f"{atr_pct_val:.2f}%",
-                    "진입가($)": round(entry_price, 2),
-                    "손절가($)": round(sl_price, 2),
-                    "손절폭(%)": f"{sl_pct:.2f}%",
-                    "익절가($)": round(tp_price, 2),
-                    "익절폭(%)": f"+{tp_pct:.2f}%",
-                    "익절선달성률": f"{tp_prob_pct:.1f}%",
-                })
-
-              df_display = pd.DataFrame(display_results)
-              st.success(
-                  f"✨ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
-                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상, ATR < {MAX_ATR_PCT:.1f}%)"
-                  f" 충족 종목 {len(df_display)}개 선별 완료!"
-              )
-            else:
-              st.warning(
-                  f"⚠️ 기준(상위 {TOP_N_PERCENT:.0f}% 랭킹, 익절선달성률"
-                  f" {MIN_TP_HIT_PROB*100:.0f}% 이상, ATR < {MAX_ATR_PCT:.1f}%)"
-                  "을 충족하는 종목이 없습니다. (관망)"
-              )
-              df_display = pd.DataFrame()
-          else:
-            st.warning(
-                "⚠️ 최신 마감일에 조건을 충족하는 유효한 데이터가 없습니다."
-            )
-            df_display = pd.DataFrame()
         else:
           st.error("데이터 전처리 결과가 비어 있습니다.")
-          df_display = pd.DataFrame()
       except Exception as e:
         st.error(f"스캔 중 오류 발생: {e}")
         st.code(traceback.format_exc(), language="python")
-        df_display = pd.DataFrame()
 
-    if df_display is not None and not df_display.empty:
-      if scan_timestamp:
-        st.markdown(f"📅 **타겟 기준일 (최신 마감일):** `{scan_timestamp}`")
+  # -------------------------------------------------------------
+  # 1-2. 과거 날짜 종목 추천 (스캐너)
+  # -------------------------------------------------------------
+  elif menu == "📅 과거 날짜 종목 추천 (스캐너)":
+    st.header(
+        f"📅 과거 날짜 기준 스윙 추천 스캐너 ({HOLDING_PERIOD}거래일 보유 / "
+        f"Top {TOP_N_PERCENT:.0f}% · 익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% · "
+        f"ATR < {MAX_ATR_PCT:.1f}%)"
+    )
+    st.caption(
+        f"테마 롤링 가산점 반영(Boost_W={BOOST_WEIGHT}, Lookback={LOOKBACK_DAYS}일) "
+        f"| 유니버스: {len(UNIVERSE_TICKERS)}개 종목 "
+        f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
+    )
 
-      st.markdown(METRIC_CSS, unsafe_allow_html=True)
+    default_past_scan_date = (datetime.now(KST) - timedelta(days=1)).date()
+    selected_scan_date = st.date_input(
+        "조회할 과거 기준일 선택",
+        value=default_past_scan_date,
+        max_value=datetime.now(KST).date(),
+        key="past_scanner_date",
+    )
 
-      cards_per_row = 2
-      num_picks = len(df_display)
-      for start_idx in range(0, num_picks, cards_per_row):
-        cols = st.columns(cards_per_row)
-        for offset in range(cards_per_row):
-          row_idx = start_idx + offset
-          if row_idx >= num_picks:
-            continue
-          r = df_display.iloc[row_idx]
-          with cols[offset]:
-            box_html = (
-                '<div class="pick-box">'
-                '<div class="pick-header">'
-                f'<div class="pick-rank-ticker">#{r["순위"]} {r["Ticker"]} <span style="font-size:13px; color:#9AA4B2;">[{r["Theme"]}]</span></div>'
-                '<div class="pick-badges">'
-                f'<div class="pick-atr">ATR {r["ATR(%)"]}</div>'
-                f'<div class="pick-score">조정점수 {r["조정 점수"]:.4f} ({r["테마가산점"]})</div>'
-                f'<div class="pick-surv">익절선달성률 {r["익절선달성률"]}</div>'
-                "</div>"
-                "</div>"
-                '<div class="pick-grid">'
-                '<div class="pick-item">'
-                '<div class="pick-item-label">진입가($)</div>'
-                f'<div class="pick-item-val">${r["진입가($)"]:.2f}</div>'
-                "</div>"
-                '<div class="pick-item">'
-                '<div class="pick-item-label">손절가 / 손절폭</div>'
-                f'<div class="pick-item-val">${r["손절가($)"]:.2f}<span class="pick-sl">({r["손절폭(%)"].strip()})</span></div>'
-                "</div>"
-                '<div class="pick-item">'
-                '<div class="pick-item-label">익절가 / 익절폭</div>'
-                f'<div class="pick-item-val">${r["익절가($)"]:.2f}<span class="pick-tp">({r["익절폭(%)"].strip()})</span></div>'
-                "</div>"
-                "</div>"
-                "</div>"
-            )
-            st.markdown(box_html, unsafe_allow_html=True)
-
-      st.markdown("#### 📋 전체 추천 종목 요약 표")
-      st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-      cutoff_str = (
-          f"{top_cutoff_score:.4f}"
-          if top_cutoff_score is not None
-          else "-"
-      )
-      avg_rec_str = (
-          f"{avg_filtered_score:.4f}"
-          if avg_filtered_score is not None
-          else "-"
-      )
-      avg_univ_str = (
-          f"{avg_universe_score:.4f}"
-          if avg_universe_score is not None
-          else "-"
-      )
-
-      summary_cards_html = (
-          '<div class="metric-container">'
-          '<div class="metric-card">'
-          f'<div class="metric-title">상위 {TOP_N_PERCENT:.0f}% 조정 점수 (커트라인)</div>'
-          f'<div class="metric-value" style="color:#38BDF8;">{cutoff_str}</div>'
-          f'<div class="metric-sub" style="color:#AAAAAA;">당일 전체 대상 상위 {TOP_N_PERCENT:.0f}% 경계</div>'
-          "</div>"
-          '<div class="metric-card">'
-          '<div class="metric-title">추천 종목 평균 조정 점수</div>'
-          f'<div class="metric-value" style="color:#00FF7F;">{avg_rec_str}</div>'
-          '<div class="metric-sub" style="color:#AAAAAA;">최종 선별 추천 종목 평균</div>'
-          "</div>"
-          '<div class="metric-card">'
-          '<div class="metric-title">전체 대상 평균 조정 점수</div>'
-          f'<div class="metric-value">{avg_univ_str}</div>'
-          '<div class="metric-sub" style="color:#AAAAAA;">당일 전체 대상 종목 평균</div>'
-          "</div>"
-          "</div>"
-      )
-      st.markdown(summary_cards_html, unsafe_allow_html=True)
-
-    if df_top10_all is not None and not df_top10_all.empty:
-      st.markdown("---")
-      st.markdown("#### 🏆 당일 조정 점수 상위 10개 종목 (진입 선별 기준 무관)")
-      st.caption(
-          f"기준일: {pd.to_datetime(latest_date).strftime('%Y-%m-%d')} | "
-          f"Adjusted_Pred_Score 내림차순 상위 10개 (상위 {TOP_N_PERCENT:.0f}% 컷 · "
-          f"익절선달성률 ≥ {MIN_TP_HIT_PROB*100:.0f}% · ATR < {MAX_ATR_PCT:.1f}% 참고 표시)"
-      )
-      st.dataframe(df_top10_all, use_container_width=True, hide_index=True)
+    with st.spinner(
+        f"{selected_scan_date.strftime('%Y-%m-%d')} 기준 유니버스 팩터 연산 및"
+        " 추론 중..."
+    ):
+      try:
+        df_clean = fetch_and_process_universe_data()
+        if not df_clean.empty:
+          target_ts = pd.Timestamp(selected_scan_date)
+          render_scanner_view(
+              df_clean=df_clean,
+              target_date_ts=target_ts,
+              top_n_percent=TOP_N_PERCENT,
+              min_tp_hit_prob=MIN_TP_HIT_PROB,
+              max_atr_pct=MAX_ATR_PCT,
+              config=MODEL_CONFIG,
+              feature_cols=FEATURE_COLS,
+              date_label_prefix="선택 과거 기준일",
+              requested_date_str=selected_scan_date.strftime("%Y-%m-%d"),
+          )
+        else:
+          st.error("데이터 전처리 결과가 비어 있습니다.")
+      except Exception as e:
+        st.error(f"과거 날짜 스캔 중 오류 발생: {e}")
+        st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
