@@ -1173,48 +1173,41 @@ else:
       }
   ]
 
-  CHUNK_SIZE = 20
   DATA_START_DATE = "2022-01-01"
 
-  def _download_single_chunk(tickers_chunk: list[str]) -> pd.DataFrame:
-    clean_chunk = [
-        t
-        for t in tickers_chunk
-        if str(t).strip().upper() not in FAILED_OR_DELISTED_TICKERS
+  @st.cache_data(ttl=3600, show_spinner=False)
+  def fetch_and_process_universe_with_meta(
+      universe_tuple: tuple[str, ...], start_date: str
+  ):
+    fetched_kst = now_kst_str()
+    active_list = [
+        t for t in universe_tuple if t not in FAILED_OR_DELISTED_TICKERS
     ]
-    if not clean_chunk:
-      return pd.DataFrame()
+    download_list = list(dict.fromkeys(active_list + ["^VIX", "SPY"]))
+    df_raw_yf = yf.download(
+        download_list,
+        start=start_date,
+        progress=False,
+        auto_adjust=True,
+        session=session,
+    )
 
-    try:
-      df_raw_chunk = yf.download(
-          clean_chunk,
-          start=DATA_START_DATE,
-          progress=False,
-          threads=False,
-          auto_adjust=True,
-          session=session,
-      )
-    except Exception:
-      return pd.DataFrame()
+    if df_raw_yf is None or df_raw_yf.empty:
+      return pd.DataFrame(), fetched_kst
 
-    if df_raw_chunk is None or df_raw_chunk.empty:
-      return pd.DataFrame()
-
-    if isinstance(df_raw_chunk.columns, pd.MultiIndex):
-      df_part = df_raw_chunk.stack(future_stack=True).reset_index()
-      if "level_1" in df_part.columns:
-        df_part = df_part.rename(columns={"level_1": "Ticker"})
+    if isinstance(df_raw_yf.columns, pd.MultiIndex):
+      df_fresh = df_raw_yf.stack(future_stack=True).reset_index()
+      if "level_1" in df_fresh.columns:
+        df_fresh = df_fresh.rename(columns={"level_1": "Ticker"})
     else:
-      df_part = df_raw_chunk.reset_index()
-      if len(clean_chunk) == 1 and "Ticker" not in df_part.columns:
-        df_part["Ticker"] = clean_chunk[0]
+      df_fresh = df_raw_yf.reset_index()
 
-    df_part.columns = [
+    df_fresh.columns = [
         str(col[0]).lower() if isinstance(col, tuple) else str(col).lower()
-        for col in df_part.columns
+        for col in df_fresh.columns
     ]
     rename_map = {}
-    for c in df_part.columns:
+    for c in df_fresh.columns:
       if "date" in c:
         rename_map[c] = "Date"
       elif "ticker" in c or "level_1" in c:
@@ -1229,38 +1222,40 @@ else:
         rename_map[c] = "Close"
       elif "volume" in c:
         rename_map[c] = "Volume"
-    df_part = df_part.rename(columns=rename_map)
+    df_fresh = df_fresh.rename(columns=rename_map)
 
-    if "Date" not in df_part.columns or "Close" not in df_part.columns:
-      return pd.DataFrame()
+    if "Date" in df_fresh.columns:
+      df_fresh["Date"] = pd.to_datetime(
+          df_fresh["Date"], errors="coerce"
+      ).dt.tz_localize(None)
+    if "Ticker" in df_fresh.columns:
+      df_fresh["Ticker"] = df_fresh["Ticker"].astype(str).str.upper()
+    df_fresh = df_fresh.dropna(subset=["Date", "Close"])
 
-    df_part["Date"] = pd.to_datetime(
-        df_part["Date"], errors="coerce"
-    ).dt.tz_localize(None)
-    if "Ticker" in df_part.columns:
-      df_part["Ticker"] = df_part["Ticker"].astype(str).str.upper()
+    market_data, spy_df = build_market_tables(df_fresh)
 
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-      if col in df_part.columns:
-        df_part[col] = pd.to_numeric(df_part[col], errors="coerce")
+    df_stocks = df_fresh[
+        ~df_fresh["Ticker"].isin(["VIX", "^VIX", "SPY"])
+    ].copy()
+    del df_raw_yf, df_fresh
+    gc.collect()
 
-    return df_part.dropna(subset=["Date", "Close"]).reset_index(drop=True)
+    processed_dfs = []
+    for _, group in df_stocks.groupby("Ticker"):
+      g = compute_stock_factors(group)
+      if not g.empty:
+        processed_dfs.append(g)
 
-  @st.cache_data(ttl=3600, show_spinner=False)
-  def _build_clean_universe_from_factors(
-      factors_tuple: tuple[tuple[str, pd.DataFrame], ...],
-      mkt_df: pd.DataFrame,
-      fetched_kst: str,
-  ):
-    if not factors_tuple:
-      return pd.DataFrame(), fetched_kst
+    del df_stocks
+    gc.collect()
 
-    processed_dfs = [g for _, g in factors_tuple if g is not None and not g.empty]
     if not processed_dfs:
       return pd.DataFrame(), fetched_kst
 
     df_all = pd.concat(processed_dfs, ignore_index=True)
-    market_data, spy_df = build_market_tables(mkt_df)
+    del processed_dfs
+    gc.collect()
+
     df_all = pd.merge(df_all, market_data, on="Date", how="inner")
     df_all = pd.merge(
         df_all, spy_df[["Date", "SPY_Ret_5d"]], on="Date", how="inner"
@@ -1280,68 +1275,10 @@ else:
     gc.collect()
     return df_clean, fetched_kst
 
-  def fetch_and_process_universe_with_progress(
-      progress_bar=None, status_placeholder=None
-  ):
-    fetched_kst = now_kst_str()
-    total_tickers = len(UNIVERSE_TICKERS)
-    if total_tickers == 0:
-      return pd.DataFrame(), fetched_kst
-
-    if progress_bar is not None:
-      progress_bar.progress(0.02)
-    if status_placeholder is not None:
-      status_placeholder.info(
-          f"📥 시장 지수 및 시세 다운로드 시작... **0 / {total_tickers}개"
-          " 종목 완료**"
-      )
-
-    mkt_df = _download_single_chunk(["^VIX", "SPY"])
-    factor_items: list[tuple[str, pd.DataFrame]] = []
-    completed_count = 0
-
-    for start_idx in range(0, total_tickers, CHUNK_SIZE):
-      chunk_tickers = UNIVERSE_TICKERS[start_idx : start_idx + CHUNK_SIZE]
-      df_chunk = _download_single_chunk(chunk_tickers)
-
-      if not df_chunk.empty and "Ticker" in df_chunk.columns:
-        df_stocks_chunk = df_chunk[
-            ~df_chunk["Ticker"].isin(["VIX", "^VIX", "SPY"])
-        ]
-        for tk, group in df_stocks_chunk.groupby("Ticker"):
-          g = compute_stock_factors(group)
-          if not g.empty:
-            factor_items.append((str(tk), g))
-
-      del df_chunk
-      gc.collect()
-
-      completed_count = min(total_tickers, start_idx + len(chunk_tickers))
-      pct = min(0.95, completed_count / total_tickers)
-      if progress_bar is not None:
-        progress_bar.progress(pct)
-      if status_placeholder is not None:
-        status_placeholder.info(
-            f"📥 시세 다운로드 및 팩터 연산 중... **{completed_count} /"
-            f" {total_tickers}개 종목 완료** ({pct*100:.0f}%)"
-        )
-
-    if status_placeholder is not None:
-      status_placeholder.info(
-          f"🧠 테마 상대강도 결합 및 데이터 정제 중... **{total_tickers} /"
-          f" {total_tickers}개 종목 완료**"
-      )
-
-    df_clean, final_fetched_kst = _build_clean_universe_from_factors(
-        tuple(factor_items), mkt_df, fetched_kst
-    )
-    if progress_bar is not None:
-      progress_bar.progress(1.0)
-
-    return df_clean, final_fetched_kst
-
   def fetch_and_process_universe_data():
-    df_clean, _ = fetch_and_process_universe_with_progress()
+    df_clean, _ = fetch_and_process_universe_with_meta(
+        tuple(UNIVERSE_TICKERS), DATA_START_DATE
+    )
     return df_clean
 
   @st.cache_data(ttl=3600, show_spinner=False)
@@ -1354,7 +1291,6 @@ else:
             ticker_upper,
             start=DATA_START_DATE,
             progress=False,
-            threads=False,
             auto_adjust=True,
             session=session,
         )
@@ -1365,7 +1301,6 @@ else:
         ticker_upper,
         start=DATA_START_DATE,
         progress=False,
-        threads=False,
         auto_adjust=True,
         session=session,
     )
@@ -1379,7 +1314,6 @@ else:
         ["^VIX", "SPY"],
         start=DATA_START_DATE,
         progress=False,
-        threads=False,
         auto_adjust=True,
         session=session,
     )
@@ -1447,37 +1381,32 @@ else:
         f"(theme_map: {len(MODEL_CONFIG.get('theme_map', {}))}개)"
     )
 
-    progress_bar = st.progress(0.0)
-    status_placeholder = st.empty()
-    try:
-      df_clean, last_fetched_kst = fetch_and_process_universe_with_progress(
-          progress_bar=progress_bar,
-          status_placeholder=status_placeholder,
-      )
-      progress_bar.empty()
-      status_placeholder.empty()
-
-      st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
-      if not df_clean.empty:
-        latest_date = pd.Timestamp(df_clean["Date"].max())
-        render_scanner_view(
-            df_clean=df_clean,
-            target_date_ts=latest_date,
-            top_n_percent=TOP_N_PERCENT,
-            min_tp_hit_prob=MIN_TP_HIT_PROB,
-            max_atr_pct=MAX_ATR_PCT,
-            config=MODEL_CONFIG,
-            feature_cols=FEATURE_COLS,
-            date_label_prefix="타겟 기준일 (최신 마감일)",
-            last_fetched_kst=last_fetched_kst,
+    with st.spinner(
+        "유니버스 시세·테마 팩터 연산 및 3중 앙상블 추론 중..."
+    ):
+      try:
+        df_clean, last_fetched_kst = fetch_and_process_universe_with_meta(
+            tuple(UNIVERSE_TICKERS), DATA_START_DATE
         )
-      else:
-        st.error("데이터 전처리 결과가 비어 있습니다.")
-    except Exception as e:
-      progress_bar.empty()
-      status_placeholder.empty()
-      st.error(f"스캔 중 오류 발생: {e}")
-      st.code(traceback.format_exc(), language="python")
+        st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
+        if not df_clean.empty:
+          latest_date = pd.Timestamp(df_clean["Date"].max())
+          render_scanner_view(
+              df_clean=df_clean,
+              target_date_ts=latest_date,
+              top_n_percent=TOP_N_PERCENT,
+              min_tp_hit_prob=MIN_TP_HIT_PROB,
+              max_atr_pct=MAX_ATR_PCT,
+              config=MODEL_CONFIG,
+              feature_cols=FEATURE_COLS,
+              date_label_prefix="타겟 기준일 (최신 마감일)",
+              last_fetched_kst=last_fetched_kst,
+          )
+        else:
+          st.error("데이터 전처리 결과가 비어 있습니다.")
+      except Exception as e:
+        st.error(f"스캔 중 오류 발생: {e}")
+        st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
   # 1-2. 과거 날짜 종목 추천 (스캐너)
@@ -1502,38 +1431,34 @@ else:
         key="past_scanner_date",
     )
 
-    progress_bar = st.progress(0.0)
-    status_placeholder = st.empty()
-    try:
-      df_clean, last_fetched_kst = fetch_and_process_universe_with_progress(
-          progress_bar=progress_bar,
-          status_placeholder=status_placeholder,
-      )
-      progress_bar.empty()
-      status_placeholder.empty()
-
-      st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
-      if not df_clean.empty:
-        target_ts = pd.Timestamp(selected_scan_date)
-        render_scanner_view(
-            df_clean=df_clean,
-            target_date_ts=target_ts,
-            top_n_percent=TOP_N_PERCENT,
-            min_tp_hit_prob=MIN_TP_HIT_PROB,
-            max_atr_pct=MAX_ATR_PCT,
-            config=MODEL_CONFIG,
-            feature_cols=FEATURE_COLS,
-            date_label_prefix="선택 과거 기준일",
-            last_fetched_kst=last_fetched_kst,
-            requested_date_str=selected_scan_date.strftime("%Y-%m-%d"),
+    with st.spinner(
+        f"{selected_scan_date.strftime('%Y-%m-%d')} 기준 유니버스 팩터 연산 및"
+        " 추론 중..."
+    ):
+      try:
+        df_clean, last_fetched_kst = fetch_and_process_universe_with_meta(
+            tuple(UNIVERSE_TICKERS), DATA_START_DATE
         )
-      else:
-        st.error("데이터 전처리 결과가 비어 있습니다.")
-    except Exception as e:
-      progress_bar.empty()
-      status_placeholder.empty()
-      st.error(f"과거 날짜 스캔 중 오류 발생: {e}")
-      st.code(traceback.format_exc(), language="python")
+        st.caption(f"🕒 데이터 마지막 다운로드 시각: **{last_fetched_kst}**")
+        if not df_clean.empty:
+          target_ts = pd.Timestamp(selected_scan_date)
+          render_scanner_view(
+              df_clean=df_clean,
+              target_date_ts=target_ts,
+              top_n_percent=TOP_N_PERCENT,
+              min_tp_hit_prob=MIN_TP_HIT_PROB,
+              max_atr_pct=MAX_ATR_PCT,
+              config=MODEL_CONFIG,
+              feature_cols=FEATURE_COLS,
+              date_label_prefix="선택 과거 기준일",
+              last_fetched_kst=last_fetched_kst,
+              requested_date_str=selected_scan_date.strftime("%Y-%m-%d"),
+          )
+        else:
+          st.error("데이터 전처리 결과가 비어 있습니다.")
+      except Exception as e:
+        st.error(f"과거 날짜 스캔 중 오류 발생: {e}")
+        st.code(traceback.format_exc(), language="python")
 
   # -------------------------------------------------------------
   # 2. 특정 종목 당일 분석
