@@ -38,79 +38,217 @@ session.headers.update({
     )
 })
 
-SEED_TICKERS_BY_THEME = {
-    "IT": (
-        "AAPL MSFT NVDA AVGO AMD ORCL CSCO IBM CRM ADBE INTU NOW AMAT LRCX KLAC"
-        " MU QCOM TXN ADI APH ANET ACN PLTR PANW CRWD FTNT CDNS SNPS MCHP TEL"
-        " MPWR NXPI ON TER KEYS CDW FSLR IT GDDY GEN HPE HPQ NTAP STX WDC SWKS"
-        " ZBRA TYL EPAM AKAM FFIV TRMB PTC ANSS VRSN CTSH JNPR SMCI MDB DDOG"
-        " NET ZS HUBS TTD U PATH DOCU OKTA"
-    ).split(),
-    "Finance": (
-        "BRK-B JPM V MA BAC WFC GS MS C BLK AXP SCHW SPGI PGR CB MMC AON CME ICE"
-        " BK STT USB PNC COF TRV ALL MET PRU AIG MCO AJG WTW BRO FIS FI GPN PYPL"
-        " MSCI NDAQ CBOE RJF TROW BEN IVZ FITB HBAN RF CFG KEY MTB NTRS SYF ALLY"
-        " DFS HIG CINF L GL AIZ EG ACGL WRB FDS JKHY CPAY COIN HOOD SOFI"
-    ).split(),
-    "Healthcare": (
-        "LLY JNJ ABBV UNH MRK TMO ABT AMGN GILD ISRG SYK BSX MDT DHR VRTX REGN"
-        " BMY CVS CI ELV HCA BDX EW ZTS IDXX IQV MCK COR CAH RMD BIIB MRNA BAX"
-        " HOLX ALGN TECH WAT MTD A DXCM PODD GEHC SOLV LH DGX HUM MOH CNC UHS"
-        " DVA INCY EXAS VTRS OGN RVTY COO HSIC XRAY CRL CTLT ILMN NBIX HALO"
-        " JAZZ UTHR RARE SGEN VKTX"
-    ).split(),
-    "Defensive": (
-        "WMT COST PG KO PEP PM MO CL MDLZ KMB TGT KR SYY ADM HSY CHD GIS KHC STZ"
-        " MKC CPB CAG SJM CLX TAP BG LW INGR BF-B EL MCD NEE SO DUK AEP SRE D"
-        " EXC XEL PEG ED WEC ES AWK ATO FE EIX PPL CMS CNP NI EVRG LNT AES NRG"
-        " CEG HD LOW TJX ROST DG DLTR ORLY AZO YUM CMG SBUX DPZ"
-    ).split(),
+# 기존 model_config에 없는 종목만 테마별 35개씩(총 140개) 신규 추가
+RAW_NEW_TICKERS_BY_THEME: dict[str, list[str]] = {
+    "IT": [
+        "ASML",
+        "TSM",
+        "ARM",
+        "MRVL",
+        "INTC",
+        "GFS",
+        "UMC",
+        "ASX",
+        "STM",
+        "SAP",
+        "SHOP",
+        "SPOT",
+        "UBER",
+        "DASH",
+        "ABNB",
+        "RBLX",
+        "ZM",
+        "TWLO",
+        "ESTC",
+        "GTLB",
+        "VRT",
+        "DELL",
+        "CIEN",
+        "LITE",
+        "COHR",
+        "MKSI",
+        "ENTG",
+        "ONTO",
+        "ACLS",
+        "FORM",
+        "CRUS",
+        "SLAB",
+        "SYNA",
+        "ALGM",
+        "DIOD",
+    ],
+    "Finance": [
+        "BX",
+        "KKR",
+        "APO",
+        "ARES",
+        "CG",
+        "OWL",
+        "LPLA",
+        "IBKR",
+        "TW",
+        "MKTX",
+        "TRU",
+        "EFX",
+        "AFRM",
+        "UPST",
+        "XYZ",
+        "MELI",
+        "NU",
+        "PAGS",
+        "STNE",
+        "XP",
+        "VIRT",
+        "SEIC",
+        "EVR",
+        "MC",
+        "LAZ",
+        "PIPR",
+        "SF",
+        "JEF",
+        "STEP",
+        "HLNE",
+        "TPG",
+        "BN",
+        "AMG",
+        "VOYA",
+        "EQH",
+    ],
+    "Healthcare": [
+        "NVO",
+        "AZN",
+        "GSK",
+        "SNY",
+        "TAK",
+        "BNTX",
+        "NVAX",
+        "ALNY",
+        "BMRN",
+        "SRPT",
+        "IONS",
+        "EXEL",
+        "ARGX",
+        "ACAD",
+        "FOLD",
+        "CRSP",
+        "EDIT",
+        "NTLA",
+        "BEAM",
+        "PACB",
+        "TWST",
+        "TXG",
+        "DOCS",
+        "TDOC",
+        "HIMS",
+        "ACCD",
+        "AMN",
+        "THC",
+        "INMD",
+        "TNDM",
+        "IRTC",
+        "LIVN",
+        "MASI",
+        "MEDP",
+        "ICLR",
+    ],
+    "Defensive": [
+        "UL",
+        "DEO",
+        "BUD",
+        "BTI",
+        "SAM",
+        "CCEP",
+        "KOF",
+        "FMX",
+        "BJ",
+        "ACI",
+        "SFM",
+        "CHWY",
+        "W",
+        "ETSY",
+        "EBAY",
+        "JD",
+        "BABA",
+        "PDD",
+        "AEO",
+        "ANF",
+        "GPS",
+        "M",
+        "KSS",
+        "JWN",
+        "BBY",
+        "ULTA",
+        "FIVE",
+        "OLLI",
+        "USFD",
+        "PFGC",
+        "CHEF",
+        "SMPL",
+        "POST",
+        "NOMD",
+        "ARMK",
+    ],
 }
 
 
-def build_seed_theme_map() -> dict[str, str]:
-  theme_map: dict[str, str] = {}
-  for theme_name, tickers in SEED_TICKERS_BY_THEME.items():
+def build_clean_new_tickers_by_theme() -> dict[str, list[str]]:
+  cleaned: dict[str, list[str]] = {}
+  seen_new: set[str] = set()
+  for theme_name, tickers in RAW_NEW_TICKERS_BY_THEME.items():
+    theme_list: list[str] = []
     for tk in tickers:
       norm_tk = str(tk).strip().upper()
-      if norm_tk and norm_tk not in theme_map:
-        theme_map[norm_tk] = theme_name
-  return theme_map
+      if norm_tk and norm_tk != "IT" and norm_tk not in seen_new:
+        seen_new.add(norm_tk)
+        theme_list.append(norm_tk)
+    cleaned[theme_name] = theme_list
+  return cleaned
 
 
-DEFAULT_THEME_MAP = build_seed_theme_map()
-SEED_UNIVERSE_TICKERS = list(DEFAULT_THEME_MAP.keys())
+NEW_TICKERS_BY_THEME = build_clean_new_tickers_by_theme()
+NEW_THEME_MAP: dict[str, str] = {
+    tk: theme_name
+    for theme_name, tickers in NEW_TICKERS_BY_THEME.items()
+    for tk in tickers
+}
+NEW_UNIVERSE_TICKERS: list[str] = list(NEW_THEME_MAP.keys())
 
 
-def sync_theme_map_in_config(config: dict, config_path: str) -> dict:
+def merge_config_with_new_tickers(config: dict, config_path: str) -> dict:
   updated_cfg = dict(config) if isinstance(config, dict) else {}
 
+  # 1. 기존 model_config의 theme_map 유지(비정상 'IT' 키만 정리)
   merged_theme_map: dict[str, str] = {}
   raw_theme_map = updated_cfg.get("theme_map", {})
   if isinstance(raw_theme_map, dict):
     for k, v in raw_theme_map.items():
       norm_k = str(k).strip().upper()
-      if norm_k and v:
+      if norm_k and norm_k != "IT" and v:
         merged_theme_map[norm_k] = str(v)
 
-  for tk, theme_name in DEFAULT_THEME_MAP.items():
-    merged_theme_map[tk] = theme_name
+  # 2. 기존에 없는 신규 140개 종목만 추가
+  for tk, theme_name in NEW_THEME_MAP.items():
+    if tk not in merged_theme_map:
+      merged_theme_map[tk] = theme_name
 
   updated_cfg["theme_map"] = merged_theme_map
 
+  # 3. 기존 model_config의 universe_tickers 유지 후 신규 종목 추가
+  norm_universe: list[str] = []
+  seen_univ: set[str] = set()
   raw_universe = updated_cfg.get("universe_tickers", [])
-  norm_universe = []
-  seen_univ = set()
   if isinstance(raw_universe, list):
     for tk in raw_universe:
       norm_tk = str(tk).strip().upper()
-      if norm_tk and norm_tk not in seen_univ:
+      if norm_tk and norm_tk != "IT" and norm_tk not in seen_univ:
         seen_univ.add(norm_tk)
         norm_universe.append(norm_tk)
-  for tk in SEED_UNIVERSE_TICKERS:
+
+  for tk in NEW_UNIVERSE_TICKERS:
     if tk not in seen_univ:
       seen_univ.add(tk)
       norm_universe.append(tk)
+
   updated_cfg["universe_tickers"] = norm_universe
 
   try:
@@ -144,7 +282,7 @@ def load_models_and_metadata():
           " 실행해 메타데이터를 업로드해주세요."
       )
 
-    config = sync_theme_map_in_config(config, config_path)
+    config = merge_config_with_new_tickers(config, config_path)
     return ranker, classifier, tp_reg, feature_cols, config, None
   except Exception as e:
     return None, None, None, None, None, str(e)
@@ -609,8 +747,8 @@ def attach_theme_features(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
   df_out = df_in.copy()
   cfg_theme_map = config.get("theme_map", {})
   merged_theme_map = {
-      **DEFAULT_THEME_MAP,
       **{str(k).strip().upper(): str(v) for k, v in cfg_theme_map.items()},
+      **NEW_THEME_MAP,
   }
 
   if "Theme" not in df_out.columns:
@@ -979,7 +1117,8 @@ else:
   LOOKBACK_DAYS = int(MODEL_CONFIG.get("lookback_days", 40))
   UNIVERSE_TICKERS = [
       str(t).strip().upper()
-      for t in MODEL_CONFIG.get("universe_tickers", SEED_UNIVERSE_TICKERS)
+      for t in MODEL_CONFIG.get("universe_tickers", NEW_UNIVERSE_TICKERS)
+      if str(t).strip().upper() and str(t).strip().upper() != "IT"
   ]
 
   base_numeric_cols = [
